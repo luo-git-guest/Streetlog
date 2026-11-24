@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streetlog — Explore your streets</title>
+<meta name="description" content="Record GPS walks and see which streets you've explored.">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<link rel="stylesheet" href="style.css">
+<script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script defer src="vendor/exifr.js"></script>
+<script defer src="folder-library.js"></script>
+<script defer src="app.js"></script>
+</head>
+<body>
+<header><div class="brand"><span class="mark" aria-hidden="true">⌖</span> Streetlog</div><button id="locate" class="outline" type="button"><span aria-hidden="true">⌖</span> My location</button></header>
+<main>
+<aside>
+<section class="intro"><h1>Explore your<br>streets<span>.</span></h1><p>Record where you go and spot the streets you still have to explore.</p></section>
+<section class="record">
+<div class="state"><span id="dot"></span><span id="status" role="status">Ready to record</span></div>
+<button id="record" type="button"><span aria-hidden="true">●</span> Start recording</button>
+<p id="hint">Allow location access and keep this page open while you explore.</p>
+<label class="snap-option"><input id="snap-recording" type="checkbox" checked aria-describedby="snap-recording-note"> Snap recordings to walking routes</label>
+<p id="snap-recording-note">Sends route coordinates to <a href="https://routing.openstreetmap.de/about.html">FOSSGIS</a> in batches while recording and matches the remaining points when you stop.</p>
+</section>
+<section class="history" aria-labelledby="history-label">
+<h2 id="history-label">Your exploration</h2>
+<div class="stats"><div><strong id="distance">0.00</strong><span>Kilometers logged</span></div><div><strong id="outings">0</strong><span>Recorded outings</span></div></div>
+<div class="file-actions">
+<button id="import" type="button" class="outline">Import GeoJSON</button>
+<input id="geojson-file" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden>
+<button id="photos" type="button" class="outline">Import Photos</button>
+<input id="photo-files" type="file" accept="image/jpeg,.jpg,.jpeg" multiple hidden>
+<button id="export" type="button" class="outline" disabled>Export GeoJSON</button>
+</div>
+<label class="snap-option"><input id="snap-import" type="checkbox" aria-describedby="snap-note"> Snap imported routes to streets</label>
+<p id="snap-note">Uses walking paths and sends selected route coordinates to <a href="https://routing.openstreetmap.de/about.html">FOSSGIS routing</a>.</p>
+<p id="import-status" role="status"></p>
+<p id="photo-status" role="status"></p>
+<div class="samples">
+<a class="sample" href="sample-street-snapping.geojson" download>Sample route</a>
+<a class="sample" href="sample-route-photo.jpg" download>Sample geotagged photo</a>
+<small>Photo by <a href="https://commons.wikimedia.org/wiki/File:Daan_Park_061021.JPG">ResTpeTw</a> · <a href="https://creativecommons.org/licenses/by/2.5/">CC BY 2.5</a> · test geotag added</small>
+</div>
+</section>
+<section class="storage" aria-label="Library storage">
+<div class="file-actions">
+<button id="open-folder" class="outline" type="button">Open library folder</button>
+<button id="reopen-folder" class="outline" type="button" hidden>Reconnect folder</button>
+<button id="save-folder" class="outline" type="button" hidden>Save to folder</button>
+</div>
+<input id="folder-files" type="file" webkitdirectory multiple hidden>
+<form id="server-folder-form" hidden>
+<label for="server-folder-path">Folder on this Mac</label>
+<div class="file-actions">
+<input id="server-folder-path" type="text" placeholder="/Users/you/Documents/Streetlog" required>
+<button class="outline" type="submit">Remember path</button>
+</div>
+</form>
+<p id="folder-status" role="status">Choose a folder with GeoJSON and Photo subfolders.</p>
+<button id="save-library" class="outline" type="button" hidden disabled>Save routes and photos to server</button>
+<div id="server-items" hidden>
+<label for="server-selection">Saved on server</label>
+<div class="file-actions">
+<select id="server-selection"><option value="">Select a route or photo</option></select>
+<button id="delete-server-item" type="button" class="outline" disabled>Delete selected</button>
+</div>
+</div>
+<p id="library-status" role="status">GPS history is stored in this browser.</p>
+</section>
+</aside>
+<section class="map-panel" aria-label="Street map">
+<div id="map" aria-label="Interactive street map"></div>
+<div class="legend"><span><i></i> GPS trail</span><span><i></i> Base streets</span><span id="photo-legend" class="photo-key" hidden><i></i> Photo</span><span id="imported-legend" class="imported" hidden><i></i> Imported</span></div>
+</section>
+</main>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"name": "Sample route near Daan Forest Park"},
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [121.53485, 25.03389],
+          [121.53724, 25.03389],
+          [121.53724, 25.02847],
+          [121.53485, 25.02847]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {"name": "Sample start"},
+      "geometry": {
+        "type": "Point",
+        "coordinates": [121.53485, 25.03389]
+      }
+    }
+  ]
+}
