@@ -26,7 +26,19 @@
 </section>
 <section class="history" aria-labelledby="history-label">
 <h2 id="history-label">Your exploration</h2>
-<div class="stats"><div><strong id="distance">0.00</strong><span>Kilometers logged</span></div><div><strong id="outings">0</strong><span>Recorded outings</span></div></div>
+<div class="stats"><div><strong id="distance">0.00</strong><span>Kilometers logged</span></div><div><strong id="outings">0</strong><span>Recorded outings</span></div><div><strong id="imported-outings">0</strong><span>Imported outings</span></div></div>
+<details id="outing-picker" hidden>
+<summary>Select outings</summary>
+<div class="outing-lists">
+<fieldset><legend>Recorded</legend><div id="recorded-choices" class="outing-choices"></div></fieldset>
+<fieldset><legend>Imported</legend><div id="imported-choices" class="outing-choices"></div></fieldset>
+</div>
+<div class="file-actions">
+<button id="merge-outings" type="button" class="outline" disabled>Add selected imports to recorded</button>
+<button id="clear-outings" type="button" class="outline" disabled>Clear selection</button>
+</div>
+<p id="outing-status" role="status"></p>
+</details>
 <div class="file-actions">
 <button id="import" type="button" class="outline">Import GeoJSON</button>
 <input id="geojson-file" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden>

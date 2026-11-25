@@ -175,6 +175,76 @@ async function matchStreetGeometry(data, cache, onProgress) {
   return { data: await visit(data), matched, unmatched };
 }
 
+function routePaths(geometry) {
+  if (!geometry) return [];
+  const { type, coordinates } = geometry;
+  if (type === "GeometryCollection") return geometry.geometries.flatMap(routePaths);
+  const validPoint = point => Array.isArray(point) &&
+    Number.isFinite(point[0]) && Math.abs(point[0]) <= 180 &&
+    Number.isFinite(point[1]) && Math.abs(point[1]) <= 90;
+  const paths = {
+    Point: () => [[coordinates]],
+    MultiPoint: () => Array.isArray(coordinates) ? coordinates.map(point => [point]) : [],
+    LineString: () => [coordinates],
+    MultiLineString: () => Array.isArray(coordinates) ? coordinates : []
+  }[type]?.() ?? [];
+  return paths.filter(path => Array.isArray(path) && path.length && path.every(validPoint));
+}
+
+function importedOutingGroups(route) {
+  const asFeatures = data => data.type === "FeatureCollection" ? data.features :
+    [data.type === "Feature" ? data : { type: "Feature", geometry: data }];
+  const original = asFeatures(route.sourceData ?? route.data);
+  const groups = new Map();
+  asFeatures(route.data).forEach((feature, index) => {
+    const paths = routePaths(feature?.geometry);
+    if (!paths.length) return;
+    const properties = feature.properties ?? {};
+    const sourceID = typeof properties.outing === "string" ? properties.outing : "";
+    if (!groups.has(sourceID)) {
+      groups.set(sourceID, {
+        key: JSON.stringify([route.id, sourceID]), routeID: route.id, sourceID,
+        name: route.name || properties.name || "Imported route",
+        segments: [], matchedSegments: [], features: [], snapped: route.snapped
+      });
+    }
+    const group = groups.get(sourceID);
+    group.features.push(feature);
+    const source = original[index]?.geometry;
+    const embedded = routePaths({ type: "LineString", coordinates: properties.originalCoordinates });
+    const sourceLine = source?.type === "LineString" ? routePaths(source) : [];
+    const originalPath = embedded[0] ?? sourceLine[0];
+    const preserveOriginal = originalPath?.length > 1 && paths.every(path => path.length > 1);
+    const rawPaths = preserveOriginal ? [originalPath] : paths;
+    rawPaths.forEach((path, pathIndex) => {
+      const metadata = pathIndex === 0 && rawPaths.length === 1;
+      group.segments.push(path.map(([lng, lat], pointIndex) => {
+        const timestamp = metadata ? properties.timestamps?.[pointIndex] : null;
+        const time = typeof timestamp === "string" ? Date.parse(timestamp) : timestamp;
+        const accuracy = metadata ? properties.accuracyMeters?.[pointIndex] : null;
+        return { lng, lat, time: Number.isFinite(time) ? time : null,
+          accuracy: Number.isFinite(accuracy) ? accuracy : null };
+      }));
+      const moved = preserveOriginal && (paths.length > 1 || JSON.stringify(paths[0]) !== JSON.stringify(path));
+      group.matchedSegments.push(moved ? paths : null);
+    });
+    if (embedded.length) group.snapped = true;
+  });
+  return [...groups.values()].map((group, index) => ({
+    ...group, name: groups.size > 1 ? `${group.name} · Outing ${index + 1}` : group.name
+  }));
+}
+
+async function importedOutingID(group) {
+  if (/^(?:[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}|import-[a-f0-9]{64})$/i.test(group.sourceID)) {
+    return group.sourceID.toLowerCase();
+  }
+  const key = JSON.stringify([group.sourceID, group.segments.map(segment =>
+    segment.map(({ lng, lat }) => [lng, lat]))]);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+  return "import-" + [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function nearestRouteSection(map, point, paths) {
   const target = map.project(point, 16);
   let nearest = null;
@@ -238,9 +308,11 @@ function init() {
   const importedPaths = [];
   const importLayers = new Map();
   const importedRoutes = [];
+  const importedGroups = new Map();
   const photos = [];
   const photoLayers = L.featureGroup().addTo(map);
   const selectionLayers = L.featureGroup().addTo(map);
+  const outingSelectionLayers = L.featureGroup().addTo(map);
   const photoSections = new Map();
   const photoButton = byId("photos");
   const photoFiles = byId("photo-files");
@@ -410,10 +482,12 @@ function init() {
     });
     const bounds = layer.getBounds();
     if (!bounds.isValid()) return null;
+    const groups = importedOutingGroups(route);
     imports.addLayer(layer);
     importLayers.set(route.id, layer);
     collectPaths(layer);
     importedRoutes.push(route);
+    for (const group of groups) importedGroups.set(group.key, group);
     byId("imported-legend").hidden = false;
     if (route.snapped) showRoutingAttribution();
     return bounds;
@@ -438,13 +512,14 @@ function init() {
         importStatus.textContent = `Matching streets · ${file.name} · ${done} of ${total} sections processed`;
       }) : { data };
       const bounds = plotImportedRoute({
-        id: crypto.randomUUID(), name: file.name, data: result.data, snapped: Boolean(result.matched)
+        id: crypto.randomUUID(), name: file.name, data: result.data, sourceData: result.matched ? data : undefined, snapped: Boolean(result.matched)
       });
       if (!bounds) {
         importStatus.textContent = "This file has no map features to display.";
         return;
       }
       showPhotoSections();
+      renderOutingPicker();
       map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
       let message = `Plotted ${file.name}.`;
       if (result.matched) message += " Street matching applied.";
@@ -559,12 +634,98 @@ function init() {
     }
   }
 
+  const checkedRecorded = new Set();
+  const checkedImported = new Set();
+  const outingPicker = byId("outing-picker");
+  const recordedChoices = byId("recorded-choices");
+  const importedChoices = byId("imported-choices");
+  const mergeOutings = byId("merge-outings");
+  const clearOutings = byId("clear-outings");
+  const outingStatus = byId("outing-status");
+  let chooserSignature = "";
+  let mergingOutings = false;
+
+  function outingName(outing, index) {
+    const time = outing.segments[0]?.[0]?.time;
+    return outing.name || (Number.isFinite(time) ? new Date(time).toLocaleString() : `Outing ${index + 1}`);
+  }
+
+  function renderOutingPicker() {
+    byId("imported-outings").textContent = importedGroups.size;
+    outingPicker.hidden = outings.length === 0 && importedGroups.size === 0;
+    const recorded = outings.map((outing, index) => [outing.id, outingName(outing, index)]);
+    const imported = [...importedGroups.values()].map(group => [group.key, group.name]);
+    const signature = JSON.stringify([recorded, imported]);
+    if (signature !== chooserSignature) {
+      chooserSignature = signature;
+      for (const [container, entries, selected] of [
+        [recordedChoices, recorded, checkedRecorded], [importedChoices, imported, checkedImported]
+      ]) {
+        const keys = new Set(entries.map(([key]) => key));
+        for (const key of selected) if (!keys.has(key)) selected.delete(key);
+        container.replaceChildren();
+        for (const [key, name] of entries) {
+          const label = document.createElement("label");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = key;
+          checkbox.checked = selected.has(key);
+          label.append(checkbox, document.createTextNode(name));
+          container.append(label);
+        }
+        if (!entries.length) container.textContent = "No outings";
+      }
+    }
+    const count = checkedRecorded.size;
+    exportButton.disabled = outings.length === 0;
+    exportButton.textContent = count ? `Export selected (${count})` : "Export all GeoJSON";
+    mergeOutings.disabled = checkedImported.size === 0 || mergingOutings;
+    clearOutings.disabled = checkedImported.size + count === 0;
+  }
+
+  function highlightOutings(center = false) {
+    outingSelectionLayers.clearLayers();
+    const features = [
+      ...outings.filter(outing => checkedRecorded.has(outing.id)).flatMap(outingFeatures),
+      ...[...checkedImported].flatMap(key => importedGroups.get(key)?.features ?? [])
+    ];
+    if (features.length === 0) return;
+    const style = { color: "#2155cf", weight: 8, interactive: false };
+    L.geoJSON({ type: "FeatureCollection", features }, {
+      style,
+      pointToLayer: (_feature, point) => L.circleMarker(point, {
+        radius: style.weight / 2, stroke: false, fillColor: style.color, fillOpacity: 1, interactive: false
+      })
+    }).addTo(outingSelectionLayers).bringToFront();
+    const bounds = outingSelectionLayers.getBounds();
+    if (center && bounds.isValid()) map.fitBounds(bounds, { maxZoom: 17, padding: [35, 35] });
+  }
+
+  for (const [container, selection] of [[recordedChoices, checkedRecorded], [importedChoices, checkedImported]]) {
+    container.addEventListener("change", event => {
+      const checkbox = event.target;
+      if (checkbox.checked) selection.add(checkbox.value);
+      else selection.delete(checkbox.value);
+      renderOutingPicker();
+      highlightOutings(true);
+    });
+  }
+
+  clearOutings.addEventListener("click", () => {
+    checkedRecorded.clear();
+    checkedImported.clear();
+    chooserSignature = "";
+    renderOutingPicker();
+    highlightOutings();
+    outingStatus.textContent = "";
+  });
+
   function refreshMap() {
     routeLayer?.remove();
     routeLayer = L.featureGroup().addTo(map);
     let meters = 0;
     for (const outing of outings) {
-      if (outing.matchedSegments) showRoutingAttribution();
+      if (outing.snapped || (outing.matchedSegments && outing.snapped !== false)) showRoutingAttribution();
       for (const [segmentIndex, segment] of outing.segments.entries()) {
         if (segment.length === 1) {
           L.circleMarker(pointCoords(segment[0]), {
@@ -582,9 +743,10 @@ function init() {
     }
     byId("distance").textContent = (meters / 1000).toFixed(2);
     byId("outings").textContent = outings.length;
-    exportButton.disabled = outings.length === 0;
+    renderOutingPicker();
     showPhotoSections();
     highlightServerItem();
+    highlightOutings();
   }
 
   try {
@@ -714,6 +876,9 @@ function init() {
         const layer = importLayers.get(id);
         if (layer) imports.removeLayer(layer);
         importLayers.delete(id);
+        for (const [key, group] of importedGroups) {
+          if (group.routeID === id) importedGroups.delete(key);
+        }
         importedPaths.length = 0;
         imports.eachLayer(collectPaths);
         byId("imported-legend").hidden = !importLayers.size;
@@ -805,6 +970,7 @@ function init() {
             ? await matchStreetGeometry(data, undefined, progress) : { data, unmatched: 0 };
           unmatched += result.unmatched;
           if (!plotImportedRoute({ id, name: entry.name, data: result.data,
+            sourceData: result.matched ? data : data.streetlogImport?.sourceData,
             snapped: alreadySnapped || Boolean(result.matched) })) skipped++;
         }
       } catch {
@@ -871,7 +1037,7 @@ function init() {
   }
 
   openFolder.addEventListener("click", async () => {
-    if (folderBusy || current || matchingRecording) return;
+    if (folderBusy || mergingOutings || current || matchingRecording) return;
     if (!window.showDirectoryPicker) {
       folderFiles.click();
       return;
@@ -888,7 +1054,7 @@ function init() {
   });
 
   reconnectFolder.addEventListener("click", async () => {
-    if (folderBusy || current || matchingRecording || !rememberedFolder) return;
+    if (folderBusy || mergingOutings || current || matchingRecording || !rememberedFolder) return;
     try {
       if (await rememberedFolder.requestPermission(folderPermission) === "granted") {
         await connectFolder(rememberedFolder);
@@ -919,7 +1085,7 @@ function init() {
 
   serverFolderForm.addEventListener("submit", async event => {
     event.preventDefault();
-    if (folderBusy || current || matchingRecording) return;
+    if (folderBusy || mergingOutings || current || matchingRecording) return;
     folderBusy = true;
     try {
       const folder = await folderLibrary.serverPreference(serverFolderPath.value.trim());
@@ -974,8 +1140,51 @@ function init() {
     return write;
   }
 
+  mergeOutings.addEventListener("click", async () => {
+    if (mergingOutings || checkedImported.size === 0) return;
+    if (current || matchingRecording || folderBusy || importButton.disabled) {
+      outingStatus.textContent = "Finish recording or importing before adding outings.";
+      return;
+    }
+    mergingOutings = true;
+    renderOutingPicker();
+    outingStatus.textContent = "Adding selected outings to your recorded library…";
+    const handle = activeFolder;
+    const selection = [...checkedImported].map(key => importedGroups.get(key)).filter(Boolean);
+    let added = 0;
+    let existing = 0;
+    let failed = 0;
+    for (const group of selection) {
+      try {
+        const id = await importedOutingID(group);
+        if (outings.some(outing => outing.id.toLowerCase() === id)) {
+          existing++;
+        } else {
+          const outing = { id, name: group.name, segments: group.segments };
+          if (group.matchedSegments.some(Boolean)) outing.matchedSegments = group.matchedSegments;
+          outing.snapped = Boolean(group.snapped);
+          if (handle) await writeFolderOuting(handle, outing);
+          else localStorage.setItem(storagePrefix + id, JSON.stringify(outing));
+          outings.push(outing);
+          added++;
+        }
+        checkedRecorded.add(outings.find(outing => outing.id.toLowerCase() === id).id);
+        checkedImported.delete(group.key);
+      } catch {
+        failed++;
+      }
+    }
+    mergingOutings = false;
+    chooserSignature = "";
+    refreshMap();
+    highlightOutings(true);
+    outingStatus.textContent = `Added ${added} to recorded outings.` +
+      (existing ? ` ${existing} already in the library.` : "") +
+      (failed ? ` Could not save ${failed}. Check the folder or browser storage and retry.` : "");
+  });
+
   saveFolder.addEventListener("click", async () => {
-    if (!activeFolder || folderBusy || current || matchingRecording || readingPhotos || importButton.disabled) {
+    if (!activeFolder || folderBusy || mergingOutings || current || matchingRecording || readingPhotos || importButton.disabled) {
       folderStatus.textContent = "Finish recording or importing before saving the folder.";
       return;
     }
@@ -989,7 +1198,7 @@ function init() {
         if (route.id.startsWith("folder-route:")) continue;
         const name = `import-${encodeURIComponent(route.id)}.geojson`;
         await folderLibrary.write(handle, "routes", name, JSON.stringify({
-          ...route.data, streetlogImport: { id: route.id, snapped: route.snapped }
+          ...route.data, streetlogImport: { id: route.id, snapped: route.snapped, sourceData: route.sourceData }
         }));
       }
       for (const photo of photos) {
@@ -1167,7 +1376,7 @@ function init() {
       finishRecording(outing, liveMatch);
       return;
     }
-    if (folderBusy) return;
+    if (folderBusy || mergingOutings) return;
     const outing = { id: crypto.randomUUID(), segments: [] };
     current = outing;
     liveMatch = snapStreets.checked ? { outing, cache: new Map(), segments: new Map(), busy: false } : null;
@@ -1217,7 +1426,8 @@ function init() {
         type: "Feature",
         properties: {
           outing: outing.id,
-          timestamps: segment.map(point => new Date(point.time).toISOString()),
+          timestamps: segment.map(point => Number.isFinite(point.time) && Number.isFinite(new Date(point.time).getTime())
+            ? new Date(point.time).toISOString() : null),
           accuracyMeters: segment.map(point => point.accuracy),
           ...(matched ? { originalCoordinates: coordinates } : {})
         },
@@ -1230,13 +1440,14 @@ function init() {
   }
 
   exportButton.addEventListener("click", () => {
-    const features = outings.flatMap(outingFeatures);
+    const selected = checkedRecorded.size ? outings.filter(outing => checkedRecorded.has(outing.id)) : outings;
+    const features = selected.flatMap(outingFeatures);
     const blob = new Blob([JSON.stringify({ type: "FeatureCollection", features })],
       { type: "application/geo+json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "streetlog.geojson";
+    link.download = checkedRecorded.size ? "streetlog-selected.geojson" : "streetlog.geojson";
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   });
