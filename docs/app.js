@@ -404,7 +404,8 @@ function init() {
     const layer = L.geoJSON(route.data, {
       style: importedStyle,
       pointToLayer: (_feature, latlng) => L.circleMarker(latlng, {
-        ...importedStyle, radius: 6, fillOpacity: 0.9
+        radius: importedStyle.weight / 2, stroke: false,
+        fillColor: importedStyle.color, fillOpacity: importedStyle.opacity
       })
     });
     const bounds = layer.getBounds();
@@ -548,7 +549,9 @@ function init() {
         ? { type: "FeatureCollection", features: outingFeatures(selected.entry) } : selected.entry.data;
       L.geoJSON(data, {
         style,
-        pointToLayer: (_feature, point) => L.circleMarker(point, { ...style, dashArray: null, radius: 6, weight: 4 })
+        pointToLayer: (_feature, point) => L.circleMarker(point, {
+          radius: style.weight / 2, stroke: false, fillColor: style.color, fillOpacity: 1, interactive: false
+        })
       }).addTo(selectionLayers).bringToFront();
     }
     if (center && selectionLayers.getBounds().isValid()) {
