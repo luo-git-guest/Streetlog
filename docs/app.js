@@ -534,6 +534,7 @@ function init() {
   });
 
   let outings = [];
+  const browserOutings = new Set();
   let current = null;
   let marker = null;
   let watch = null;
@@ -562,10 +563,12 @@ function init() {
   const distance = (first, second) => map.distance(pointCoords(first), pointCoords(second));
 
   function loadOutings() {
-    return Object.keys(localStorage)
+    const saved = Object.keys(localStorage)
       .filter(key => key.startsWith(storagePrefix))
       .map(key => JSON.parse(localStorage.getItem(key)))
       .filter(outing => outing?.segments?.length);
+    for (const outing of saved) browserOutings.add(outing.id);
+    return saved;
   }
 
   const serverSelection = byId("server-selection");
@@ -641,9 +644,11 @@ function init() {
   const importedChoices = byId("imported-choices");
   const mergeOutings = byId("merge-outings");
   const clearOutings = byId("clear-outings");
+  const deleteRecording = byId("delete-recording");
   const outingStatus = byId("outing-status");
   let chooserSignature = "";
   let mergingOutings = false;
+  let deletingRecording = false;
 
   function outingName(outing, index) {
     const time = outing.segments[0]?.[0]?.time;
@@ -681,6 +686,7 @@ function init() {
     exportButton.textContent = count ? `Export selected (${count})` : "Export all GeoJSON";
     mergeOutings.disabled = checkedImported.size === 0 || mergingOutings;
     clearOutings.disabled = checkedImported.size + count === 0;
+    deleteRecording.disabled = count !== 1 || deletingRecording;
   }
 
   function highlightOutings(center = false) {
@@ -799,7 +805,7 @@ function init() {
   }
 
   saveLibrary.addEventListener("click", async () => {
-    if (readingPhotos || importButton.disabled || matchingRecording) {
+    if (readingPhotos || importButton.disabled || matchingRecording || deletingRecording) {
       libraryStatus.textContent = "Wait for importing or street matching to finish, then save.";
       return;
     }
@@ -849,7 +855,7 @@ function init() {
 
   deleteServerItem.addEventListener("click", async () => {
     const selected = selectedServerItem();
-    if (!selected || serverBusy) return;
+    if (!selected || serverBusy || deletingRecording) return;
     if (current || matchingRecording || readingPhotos || importButton.disabled) {
       libraryStatus.textContent = "Finish recording, matching, or importing before deleting.";
       return;
@@ -861,13 +867,7 @@ function init() {
     renderServerItems();
     libraryStatus.textContent = "Deleting the selected item…";
     try {
-      const response = await fetch("/api/library", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ collection, id })
-      });
-      if (!response.ok) throw new Error((await response.json()).error);
-      savedItems[collection].delete(id);
+      await deleteServerCopy(collection, id);
       if (collection === "outings") {
         outings = outings.filter(outing => outing.id !== id);
       } else if (collection === "imports") {
@@ -902,6 +902,16 @@ function init() {
     }
   });
 
+  async function deleteServerCopy(collection, id) {
+    const response = await fetch("/api/library", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ collection, id })
+    });
+    if (!response.ok) throw new Error((await response.json()).error);
+    savedItems[collection].delete(id);
+  }
+
   const openFolder = byId("open-folder");
   const reconnectFolder = byId("reopen-folder");
   const folderFiles = byId("folder-files");
@@ -915,6 +925,24 @@ function init() {
   let rememberedFolder = null;
   let folderWrite = Promise.resolve();
   let folderBusy = false;
+  const folderOutingFiles = new Map();
+  const readOnlyOutings = new Set();
+
+  function rememberFolderOuting(id, handle, name) {
+    if (!handle) {
+      readOnlyOutings.add(id);
+      return;
+    }
+    readOnlyOutings.delete(id);
+    const copies = folderOutingFiles.get(id) ?? [];
+    if (!copies.some(copy => copy.handle === handle && copy.name === name)) copies.push({ handle, name });
+    folderOutingFiles.set(id, copies);
+  }
+
+  function saveBrowserOuting(outing) {
+    localStorage.setItem(storagePrefix + outing.id, JSON.stringify(outing));
+    browserOutings.add(outing.id);
+  }
 
   function mergeOuting(outing) {
     const index = outings.findIndex(existing => existing.id === outing.id);
@@ -935,7 +963,7 @@ function init() {
     return stored ? stored[1] : `folder-photo:${name}`;
   }
 
-  async function loadFolder(files) {
+  async function loadFolder(files, handle = null) {
     let skipped = 0;
     let unmatched = 0;
     let done = 0;
@@ -962,6 +990,7 @@ function init() {
             if (result.matched) saved.matchedSegments = result.data.geometries.map(geometry => geometry?.coordinates ?? null);
           }
           mergeOuting(saved);
+          rememberFolderOuting(saved.id, handle, entry.name);
         } else {
           const id = data.streetlogImport?.id || `folder-route:${entry.name}`;
           if (importedRoutes.some(route => route.id === id)) continue;
@@ -1013,7 +1042,7 @@ function init() {
         await handle.getDirectoryHandle("GeoJSON", { create: true });
         await handle.getDirectoryHandle("Photo", { create: true });
       }
-      const summary = await loadFolder(await folderLibrary.list(handle));
+      const summary = await loadFolder(await folderLibrary.list(handle), handle);
       activeFolder = handle;
       if (!handle.server) rememberedFolder = handle;
       reconnectFolder.hidden = true;
@@ -1037,7 +1066,7 @@ function init() {
   }
 
   openFolder.addEventListener("click", async () => {
-    if (folderBusy || mergingOutings || current || matchingRecording) return;
+    if (folderBusy || mergingOutings || deletingRecording || current || matchingRecording) return;
     if (!window.showDirectoryPicker) {
       folderFiles.click();
       return;
@@ -1054,7 +1083,7 @@ function init() {
   });
 
   reconnectFolder.addEventListener("click", async () => {
-    if (folderBusy || mergingOutings || current || matchingRecording || !rememberedFolder) return;
+    if (folderBusy || mergingOutings || deletingRecording || current || matchingRecording || !rememberedFolder) return;
     try {
       if (await rememberedFolder.requestPermission(folderPermission) === "granted") {
         await connectFolder(rememberedFolder);
@@ -1085,7 +1114,7 @@ function init() {
 
   serverFolderForm.addEventListener("submit", async event => {
     event.preventDefault();
-    if (folderBusy || mergingOutings || current || matchingRecording) return;
+    if (folderBusy || mergingOutings || deletingRecording || current || matchingRecording) return;
     folderBusy = true;
     try {
       const folder = await folderLibrary.serverPreference(serverFolderPath.value.trim());
@@ -1135,13 +1164,60 @@ function init() {
     const data = JSON.stringify({
       type: "FeatureCollection", features: outingFeatures(outing), streetlogOuting: outing
     });
-    const write = folderWrite.catch(() => {}).then(() => folderLibrary.write(handle, "routes", name, data, true));
+    const write = folderWrite.catch(() => {}).then(async () => {
+      await folderLibrary.write(handle, "routes", name, data, true);
+      rememberFolderOuting(outing.id, handle, name);
+    });
     folderWrite = write;
     return write;
   }
 
+  deleteRecording.addEventListener("click", async () => {
+    if (checkedRecorded.size !== 1 || deletingRecording) return;
+    if (current || matchingRecording || folderBusy || mergingOutings || serverBusy) {
+      outingStatus.textContent = "Finish recording or saving before deleting an outing.";
+      return;
+    }
+    const [id] = checkedRecorded;
+    const index = outings.findIndex(outing => outing.id === id);
+    if (index < 0) return;
+    if (readOnlyOutings.has(id)) {
+      outingStatus.textContent = "This recording was opened from a read-only folder. Reopen that folder with write access, or remove its file in Files or Finder.";
+      return;
+    }
+    const name = outingName(outings[index], index);
+    if (!window.confirm(`Delete this recording and its saved Streetlog copies?\n${name}`)) return;
+    deletingRecording = true;
+    outingStatus.textContent = "Deleting recording…";
+    renderOutingPicker();
+    try {
+      await folderWrite.catch(() => {});
+      for (const copy of folderOutingFiles.get(id) ?? []) {
+        await folderLibrary.removeOuting(copy.handle, copy.name, id);
+      }
+      if (savedItems.outings.has(id)) await deleteServerCopy("outings", id);
+      try {
+        localStorage.removeItem(storagePrefix + id);
+      } catch (error) {
+        if (browserOutings.has(id)) throw error;
+      }
+      browserOutings.delete(id);
+      folderOutingFiles.delete(id);
+      outings = outings.filter(outing => outing.id !== id);
+      checkedRecorded.delete(id);
+      renderServerItems();
+      refreshMap();
+      outingStatus.textContent = "Recording deleted.";
+    } catch (error) {
+      outingStatus.textContent = `Could not finish deleting. ${error.message} You can retry.`;
+    } finally {
+      deletingRecording = false;
+      renderOutingPicker();
+    }
+  });
+
   mergeOutings.addEventListener("click", async () => {
-    if (mergingOutings || checkedImported.size === 0) return;
+    if (mergingOutings || deletingRecording || checkedImported.size === 0) return;
     if (current || matchingRecording || folderBusy || importButton.disabled) {
       outingStatus.textContent = "Finish recording or importing before adding outings.";
       return;
@@ -1164,7 +1240,7 @@ function init() {
           if (group.matchedSegments.some(Boolean)) outing.matchedSegments = group.matchedSegments;
           outing.snapped = Boolean(group.snapped);
           if (handle) await writeFolderOuting(handle, outing);
-          else localStorage.setItem(storagePrefix + id, JSON.stringify(outing));
+          else saveBrowserOuting(outing);
           outings.push(outing);
           added++;
         }
@@ -1184,7 +1260,7 @@ function init() {
   });
 
   saveFolder.addEventListener("click", async () => {
-    if (!activeFolder || folderBusy || mergingOutings || current || matchingRecording || readingPhotos || importButton.disabled) {
+    if (!activeFolder || folderBusy || mergingOutings || deletingRecording || current || matchingRecording || readingPhotos || importButton.disabled) {
       folderStatus.textContent = "Finish recording or importing before saving the folder.";
       return;
     }
@@ -1293,7 +1369,7 @@ function init() {
       outing.matchedSegments = result.data.geometries.map(geometry => geometry?.coordinates ?? null);
       try {
         if (activeFolder) await writeFolderOuting(activeFolder, outing);
-        else localStorage.setItem(storagePrefix + outing.id, JSON.stringify(outing));
+        else saveBrowserOuting(outing);
       } catch {
         delete outing.matchedSegments;
         status.textContent = "Could not save the street match. Original GPS trail kept.";
@@ -1341,7 +1417,7 @@ function init() {
     else segment.push(point);
 
     try {
-      if (!activeFolder) localStorage.setItem(storagePrefix + current.id, JSON.stringify(current));
+      if (!activeFolder) saveBrowserOuting(current);
     } catch {
       if (newSegment) current.segments.pop();
       else segment.pop();
@@ -1376,7 +1452,7 @@ function init() {
       finishRecording(outing, liveMatch);
       return;
     }
-    if (folderBusy || mergingOutings) return;
+    if (folderBusy || mergingOutings || deletingRecording) return;
     const outing = { id: crypto.randomUUID(), segments: [] };
     current = outing;
     liveMatch = snapStreets.checked ? { outing, cache: new Map(), segments: new Map(), busy: false } : null;

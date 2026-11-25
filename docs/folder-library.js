@@ -123,9 +123,30 @@ const folderLibrary = (() => {
     }
   }
 
+  async function removeOuting(handle, name, id) {
+    if (handle.server) {
+      const response = await fetch(fileUrl(handle, "routes", name), {
+        method: "DELETE",
+        headers: { "X-Streetlog-Folder": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ id })
+      });
+      if (!response.ok) throw new Error("Could not delete the recording from the folder.");
+      return;
+    }
+    try {
+      const directory = await handle.getDirectoryHandle(folders.routes);
+      const entry = await directory.getFileHandle(name);
+      const data = JSON.parse(await (await entry.getFile()).text());
+      if (data.streetlogOuting?.id !== id) throw new Error("That folder file no longer matches the recording.");
+      await directory.removeEntry(name);
+    } catch (error) {
+      if (error.name !== "NotFoundError") throw error;
+    }
+  }
+
   return {
     remember: handle => accessPreference("readwrite", handle),
     remembered: () => accessPreference("readonly"),
-    list, selectedFiles, write, serverPreference
+    list, selectedFiles, write, removeOuting, serverPreference
   };
 })();

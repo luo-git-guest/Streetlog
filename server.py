@@ -194,7 +194,36 @@ class StreetlogHandler(SimpleHTTPRequestHandler):
             return self.reply_json(400, {"error": "Could not write the folder file."})
         return self.reply_json(200, {"saved": True})
 
+    def delete_folder_outing(self):
+        if not self.local_request() or self.headers.get("X-Streetlog-Folder") != "1":
+            return self.reply_json(403, {"error": "Use Streetlog on localhost."})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 16384:
+                raise ValueError("Invalid request length.")
+            identifier = json.loads(self.rfile.read(length))["id"]
+            params = parse_qs(urlsplit(self.path).query)
+            if not isinstance(identifier, str) or not identifier or params.get("kind") != ["routes"]:
+                raise ValueError("Expected a recorded outing.")
+            with library_lock:
+                root = self.configured_folder()
+                if root is None:
+                    raise ValueError("No folder selected.")
+                path, _ = self.folder_file(root, params)
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    return self.reply_json(200, {"deleted": True})
+                if data.get("streetlogOuting", {}).get("id") != identifier:
+                    raise ValueError("File does not match the recording.")
+                path.unlink()
+        except (ValueError, TypeError, KeyError, AttributeError, OSError):
+            return self.reply_json(400, {"error": "Could not delete the recorded outing file."})
+        return self.reply_json(200, {"deleted": True})
+
     def do_DELETE(self):
+        if urlsplit(self.path).path == FOLDER_API:
+            return self.delete_folder_outing()
         if self.path != API:
             return self.reply_json(404, {"error": "Unknown endpoint."})
         if not self.local_request():

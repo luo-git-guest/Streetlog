@@ -62,7 +62,7 @@ h2{font-size:1rem;margin:0 0 12px}
 #server-items{margin-top:12px}
 #server-items label{display:block;margin-bottom:4px;font-weight:650}
 #server-selection{max-width:100%;min-height:44px;border:1px solid var(--line);border-radius:9px;background:white;color:var(--ink);padding:6px;font:inherit}
-#delete-server-item{color:#922932}
+#delete-server-item,#delete-recording{color:#922932}
 
 #server-folder-form{margin-top:8px}
 #server-folder-form label{display:block;margin-bottom:4px}
