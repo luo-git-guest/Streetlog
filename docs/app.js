@@ -15,35 +15,91 @@ const defaultHint = hint.textContent;
 const matchBatchSize = 10;
 let nextMatchRequest = 0;
 
-function countMatchBatches(geometry) {
+// Keep the straight-line approximation within five meters and limit point
+// spacing so the matcher still gets observations near nearby streets.
+function matchAnchorIndices(coordinates, includeEnd = true, limit = Infinity) {
+  if (coordinates.length < 2) return coordinates.map((_, index) => index);
+
+  const anchors = [0];
+  let start = 0;
+  for (let end = 1; end < coordinates.length; end++) {
+    const [lng, lat] = coordinates[start];
+    const metersPerLongitude = 111320 * Math.cos(lat * Math.PI / 180);
+    const offsetMeters = point => [
+      (((point[0] - lng + 540) % 360) - 180) * metersPerLongitude,
+      (point[1] - lat) * 111320
+    ];
+    const [dx, dy] = offsetMeters(coordinates[end]);
+    const lengthSquared = dx * dx + dy * dy;
+    let preserve = !Number.isFinite(lengthSquared) || lengthSquared > 35 ** 2 || end - start > 32;
+    if (!preserve && end - start >= 2) {
+      const [cornerX, cornerY] = offsetMeters(coordinates[end - 1]);
+      const [beforeX, beforeY] = offsetMeters(coordinates[end - 2]);
+      const [ax, ay] = [cornerX - beforeX, cornerY - beforeY];
+      const [bx, by] = [dx - cornerX, dy - cornerY];
+      const incoming = Math.hypot(ax, ay);
+      const outgoing = Math.hypot(bx, by);
+      preserve = incoming >= 4.5 && outgoing >= 4.5 &&
+        ax * bx + ay * by < incoming * outgoing * Math.SQRT1_2;
+    }
+    if (!preserve) {
+      for (let index = start + 1; index < end; index++) {
+        const [px, py] = offsetMeters(coordinates[index]);
+        const projection = lengthSquared ? Math.max(0, Math.min(1, (px * dx + py * dy) / lengthSquared)) : 0;
+        if (!Number.isFinite(px + py) || Math.hypot(px - projection * dx, py - projection * dy) > 5) {
+          preserve = true;
+          break;
+        }
+      }
+    }
+    if (preserve) {
+      start = Math.max(start + 1, end - 1);
+      anchors.push(start);
+      if (anchors.length === limit) return anchors;
+      if (start < end) end = start;
+    }
+  }
+  const last = coordinates.length - 1;
+  if (includeEnd && anchors.at(-1) !== last) anchors.push(last);
+  return anchors;
+}
+
+function countMatchBatches(geometry, anchorsFor) {
   switch (geometry?.type) {
     case "FeatureCollection":
-      return geometry.features.reduce((sum, child) => sum + countMatchBatches(child), 0);
+      return geometry.features.reduce((sum, child) => sum + countMatchBatches(child, anchorsFor), 0);
     case "Feature":
-      return countMatchBatches(geometry.geometry);
+      return countMatchBatches(geometry.geometry, anchorsFor);
     case "GeometryCollection":
-      return geometry.geometries.reduce((sum, child) => sum + countMatchBatches(child), 0);
+      return geometry.geometries.reduce((sum, child) => sum + countMatchBatches(child, anchorsFor), 0);
     case "MultiLineString":
       return geometry.coordinates.reduce((sum, line) =>
-        sum + Math.max(0, Math.ceil((line.length - 1) / (matchBatchSize - 1))), 0);
+        sum + Math.max(0, Math.ceil((anchorsFor(line).length - 1) / (matchBatchSize - 1))), 0);
     case "LineString":
-      return Math.max(0, Math.ceil((geometry.coordinates.length - 1) / (matchBatchSize - 1)));
+      return Math.max(0, Math.ceil((anchorsFor(geometry.coordinates).length - 1) / (matchBatchSize - 1)));
     default:
       return 0;
   }
 }
 
 async function matchStreetGeometry(data, cache, onProgress) {
-  const total = onProgress ? countMatchBatches(data) : 0;
+  const anchorsByLine = new WeakMap();
+  function anchorsFor(coordinates) {
+    if (!anchorsByLine.has(coordinates)) anchorsByLine.set(coordinates, matchAnchorIndices(coordinates));
+    return anchorsByLine.get(coordinates);
+  }
+  const total = onProgress ? countMatchBatches(data, anchorsFor) : 0;
   if (total) onProgress(0, total);
   let matched = 0;
   let unmatched = 0;
 
   async function matchLine(coordinates) {
     const lines = [];
-    // Overlap chunks by one point so adjacent requests use the same endpoint.
-    for (let start = 0; start < coordinates.length - 1; start += matchBatchSize - 1) {
-      const points = coordinates.slice(start, start + matchBatchSize);
+    const anchors = anchorsFor(coordinates);
+    // Overlap chunks by one anchor so adjacent requests share an endpoint.
+    for (let start = 0; start < anchors.length - 1; start += matchBatchSize - 1) {
+      const batch = anchors.slice(start, start + matchBatchSize);
+      const points = batch.map(index => coordinates[index]);
       try {
         const positions = points.map(([lng, lat]) => {
           if (!Number.isFinite(lng) || !Number.isFinite(lat) ||
@@ -80,7 +136,7 @@ async function matchStreetGeometry(data, cache, onProgress) {
         lines.push(geometry.coordinates);
         matched++;
       } catch {
-        lines.push(points);
+        lines.push(coordinates.slice(batch[0], batch.at(-1) + 1));
         unmatched++;
       } finally {
         if (total) onProgress(matched + unmatched, total);
@@ -981,13 +1037,16 @@ function init() {
       for (const [index, segment] of preview.outing.segments.entries()) {
         const state = preview.segments.get(index) ?? { offset: 0, paths: [] };
         while (segment.length - state.offset >= matchBatchSize && current === preview.outing) {
-          const points = segment.slice(state.offset, state.offset + matchBatchSize);
+          const coordinates = segment.slice(state.offset).map(({ lat, lng }) => [lng, lat]);
+          const anchors = matchAnchorIndices(coordinates, false, matchBatchSize);
+          if (anchors.length < matchBatchSize) break;
+          const end = anchors.at(-1);
           const result = await matchStreetGeometry({
-            type: "LineString", coordinates: points.map(({ lat, lng }) => [lng, lat])
+            type: "LineString", coordinates: coordinates.slice(0, end + 1)
           }, preview.cache);
           if (current !== preview.outing) return;
           state.paths.push(...result.data.coordinates);
-          state.offset += matchBatchSize - 1;
+          state.offset += end;
           preview.segments.set(index, state);
           if (result.matched) showRoutingAttribution();
           refreshMap();
