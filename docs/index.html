@@ -21,8 +21,8 @@
 <div class="state"><span id="dot"></span><span id="status" role="status">Ready to record</span></div>
 <button id="record" type="button"><span aria-hidden="true">●</span> Start recording</button>
 <p id="hint">Allow location access and keep this page open while you explore.</p>
-<label class="snap-option"><input id="snap-recording" type="checkbox" checked aria-describedby="snap-recording-note"> Snap recordings to walking routes</label>
-<p id="snap-recording-note">Sends route coordinates to <a href="https://routing.openstreetmap.de/about.html">FOSSGIS</a> in batches while recording and matches the remaining points when you stop.</p>
+<label class="snap-option"><input id="snap-streets" type="checkbox" checked aria-describedby="snap-recording-note"> Snap to streets</label>
+<p id="snap-recording-note">Matches recordings and imported routes to walking paths using <a href="https://routing.openstreetmap.de/about.html">FOSSGIS</a>. When enabled, route coordinates are sent to that service.</p>
 </section>
 <section class="history" aria-labelledby="history-label">
 <h2 id="history-label">Your exploration</h2>
@@ -34,8 +34,7 @@
 <input id="photo-files" type="file" accept="image/jpeg,.jpg,.jpeg" multiple hidden>
 <button id="export" type="button" class="outline" disabled>Export GeoJSON</button>
 </div>
-<label class="snap-option"><input id="snap-import" type="checkbox" aria-describedby="snap-note"> Snap imported routes to streets</label>
-<p id="snap-note">Uses walking paths and sends selected route coordinates to <a href="https://routing.openstreetmap.de/about.html">FOSSGIS routing</a>.</p>
+<progress id="import-progress" aria-label="GeoJSON import progress" hidden></progress>
 <p id="import-status" role="status"></p>
 <p id="photo-status" role="status"></p>
 <div class="samples">
@@ -58,6 +57,7 @@
 <button class="outline" type="submit">Remember path</button>
 </div>
 </form>
+<progress id="folder-progress" aria-label="Library folder import progress" hidden></progress>
 <p id="folder-status" role="status">Choose a folder with GeoJSON and Photo subfolders.</p>
 <button id="save-library" class="outline" type="button" hidden disabled>Save routes and photos to server</button>
 <div id="server-items" hidden>

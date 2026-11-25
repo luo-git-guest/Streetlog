@@ -15,7 +15,27 @@ const defaultHint = hint.textContent;
 const matchBatchSize = 10;
 let nextMatchRequest = 0;
 
-async function matchStreetGeometry(data, cache) {
+function countMatchBatches(geometry) {
+  switch (geometry?.type) {
+    case "FeatureCollection":
+      return geometry.features.reduce((sum, child) => sum + countMatchBatches(child), 0);
+    case "Feature":
+      return countMatchBatches(geometry.geometry);
+    case "GeometryCollection":
+      return geometry.geometries.reduce((sum, child) => sum + countMatchBatches(child), 0);
+    case "MultiLineString":
+      return geometry.coordinates.reduce((sum, line) =>
+        sum + Math.max(0, Math.ceil((line.length - 1) / (matchBatchSize - 1))), 0);
+    case "LineString":
+      return Math.max(0, Math.ceil((geometry.coordinates.length - 1) / (matchBatchSize - 1)));
+    default:
+      return 0;
+  }
+}
+
+async function matchStreetGeometry(data, cache, onProgress) {
+  const total = onProgress ? countMatchBatches(data) : 0;
+  if (total) onProgress(0, total);
   let matched = 0;
   let unmatched = 0;
 
@@ -62,6 +82,8 @@ async function matchStreetGeometry(data, cache) {
       } catch {
         lines.push(points);
         unmatched++;
+      } finally {
+        if (total) onProgress(matched + unmatched, total);
       }
     }
     return lines;
@@ -305,7 +327,21 @@ function init() {
   const importButton = byId("import");
   const fileInput = byId("geojson-file");
   const importStatus = byId("import-status");
-  const snapImport = byId("snap-import");
+  const importProgress = byId("import-progress");
+  const snapStreets = byId("snap-streets");
+  const snapPreferenceKey = "streetlog.snap-streets";
+  try {
+    snapStreets.checked = localStorage.getItem(snapPreferenceKey) !== "off";
+  } catch {
+    // The markup supplies the default when browser storage is unavailable.
+  }
+  snapStreets.addEventListener("change", () => {
+    try {
+      localStorage.setItem(snapPreferenceKey, snapStreets.checked ? "on" : "off");
+    } catch {
+      // The selection still applies for this visit.
+    }
+  });
   const importedStyle = { color: "#007985", weight: 5, opacity: 0.9 };
 
   function plotImportedRoute(route) {
@@ -332,13 +368,18 @@ function init() {
     if (!file) return;
     fileInput.value = "";
     importButton.disabled = true;
-    const shouldSnap = snapImport.checked;
-    snapImport.disabled = true;
+    const shouldSnap = snapStreets.checked;
+    importProgress.removeAttribute("value");
+    importProgress.hidden = false;
     importStatus.textContent = shouldSnap ? "Matching to streets…" : "Importing…";
     try {
       const data = JSON.parse(await file.text());
       if (!data || typeof data.type !== "string") throw new Error("Missing GeoJSON type");
-      const result = shouldSnap ? await matchStreetGeometry(data) : { data };
+      const result = shouldSnap ? await matchStreetGeometry(data, undefined, (done, total) => {
+        importProgress.max = total;
+        importProgress.value = done;
+        importStatus.textContent = `Matching streets · ${done} of ${total} sections processed`;
+      }) : { data };
       const bounds = plotImportedRoute({
         id: crypto.randomUUID(), name: file.name, data: result.data, snapped: Boolean(result.matched)
       });
@@ -356,7 +397,7 @@ function init() {
       importStatus.textContent = "Could not read this file. Choose valid GeoJSON.";
     } finally {
       importButton.disabled = false;
-      snapImport.disabled = false;
+      importProgress.hidden = true;
     }
   });
 
@@ -369,7 +410,6 @@ function init() {
   let routeLayer;
   let matchingRecording = false;
   let liveMatch = null;
-  const snapRecording = byId("snap-recording");
   const pointCoords = point => [point.lat, point.lng];
 
   function displayedPaths(outing, segment, index) {
@@ -643,6 +683,7 @@ function init() {
   const folderFiles = byId("folder-files");
   const saveFolder = byId("save-folder");
   const folderStatus = byId("folder-status");
+  const folderProgress = byId("folder-progress");
   const serverFolderForm = byId("server-folder-form");
   const serverFolderPath = byId("server-folder-path");
   const folderPermission = { mode: "readwrite" };
@@ -672,6 +713,16 @@ function init() {
 
   async function loadFolder(files) {
     let skipped = 0;
+    let unmatched = 0;
+    let done = 0;
+    const total = files.routes.length + files.photos.length;
+    const shouldSnap = snapStreets.checked;
+    const progress = (matched, batches) => {
+      folderProgress.value = done + matched / batches;
+      folderStatus.textContent = `Matching streets · File ${done + 1} of ${total} · ${matched} of ${batches} sections processed`;
+    };
+    folderProgress.max = Math.max(1, total);
+    folderProgress.value = 0;
     for (const entry of files.routes) {
       try {
         const data = JSON.parse(await (await entry.getFile()).text());
@@ -679,49 +730,68 @@ function init() {
         if (saved && typeof saved.id === "string" && Array.isArray(saved.segments) &&
             saved.segments.length && saved.segments.every(segment => Array.isArray(segment) && segment.length &&
               segment.every(point => Number.isFinite(point?.lat) && Number.isFinite(point?.lng)))) {
+          if (shouldSnap && !saved.matchedSegments) {
+            const result = await matchStreetGeometry(outingGeometry(saved), undefined, progress);
+            unmatched += result.unmatched;
+            if (result.matched) saved.matchedSegments = result.data.geometries.map(geometry => geometry?.coordinates ?? null);
+          }
           mergeOuting(saved);
         } else {
           const id = data.streetlogImport?.id || `folder-route:${entry.name}`;
           if (importedRoutes.some(route => route.id === id)) continue;
-          if (!plotImportedRoute({ id, data, snapped: Boolean(data.streetlogImport?.snapped) })) skipped++;
+          const alreadySnapped = Boolean(data.streetlogImport?.snapped);
+          const result = shouldSnap && !alreadySnapped
+            ? await matchStreetGeometry(data, undefined, progress) : { data, unmatched: 0 };
+          unmatched += result.unmatched;
+          if (!plotImportedRoute({ id, name: entry.name, data: result.data,
+            snapped: alreadySnapped || Boolean(result.matched) })) skipped++;
         }
       } catch {
         skipped++;
+      } finally {
+        folderProgress.value = ++done;
       }
     }
     for (const entry of files.photos) {
-      const id = photoFileId(entry.name);
-      if (photos.some(photo => photo.id === id)) continue;
       try {
+        const id = photoFileId(entry.name);
+        if (photos.some(photo => photo.id === id)) continue;
         const gps = await window.exifr.gps(await entry.getFile());
         if (!Number.isFinite(gps?.latitude) || Math.abs(gps.latitude) > 90 ||
             !Number.isFinite(gps.longitude) || Math.abs(gps.longitude) > 180) throw new Error("Missing GPS");
         photos.push({ id, name: entry.name, point: L.latLng(gps.latitude, gps.longitude), getFile: entry.getFile });
       } catch {
         skipped++;
+      } finally {
+        folderProgress.value = ++done;
+        folderStatus.textContent = `Reading library folder… ${done} of ${total} files processed`;
       }
     }
     refreshMap();
     const bounds = routeLayer.getBounds().extend(imports.getBounds());
     if (bounds.isValid() && !current) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
-    return skipped;
+    let summary = skipped ? ` Skipped ${skipped} unreadable files.` : "";
+    if (unmatched) summary += " Unmatched sections use their original coordinates.";
+    return summary;
   }
 
   async function connectFolder(handle) {
     folderBusy = true;
+    folderProgress.removeAttribute("value");
+    folderProgress.hidden = false;
     folderStatus.textContent = "Reading library folder…";
     try {
       if (!handle.server) {
         await handle.getDirectoryHandle("GeoJSON", { create: true });
         await handle.getDirectoryHandle("Photo", { create: true });
       }
-      const skipped = await loadFolder(await folderLibrary.list(handle));
+      const summary = await loadFolder(await folderLibrary.list(handle));
       activeFolder = handle;
       if (!handle.server) rememberedFolder = handle;
       reconnectFolder.hidden = true;
       saveFolder.hidden = false;
       if (navigator.geolocation && window.isSecureContext) record.disabled = false;
-      folderStatus.textContent = `Opened ${handle.name}.${skipped ? ` Skipped ${skipped} unreadable files.` : ""}`;
+      folderStatus.textContent = `Opened ${handle.name}.${summary}`;
       if (handle.server) folderStatus.textContent += " This folder will reopen on your next visit.";
       else {
         try {
@@ -733,6 +803,7 @@ function init() {
     } catch {
       folderStatus.textContent = "Could not open the library folder.";
     } finally {
+      folderProgress.hidden = true;
       folderBusy = false;
     }
   }
@@ -770,11 +841,16 @@ function init() {
     folderFiles.value = "";
     if (!files.length || folderBusy) return;
     folderBusy = true;
+    folderProgress.removeAttribute("value");
+    folderProgress.hidden = false;
     folderStatus.textContent = "Reading library folder…";
     try {
-      const skipped = await loadFolder(folderLibrary.selectedFiles(files));
-      folderStatus.textContent = `Folder imported for this visit only.${skipped ? ` Skipped ${skipped} unreadable files.` : ""}`;
+      const summary = await loadFolder(folderLibrary.selectedFiles(files));
+      folderStatus.textContent = `Folder imported for this visit only.${summary}`;
+    } catch {
+      folderStatus.textContent = "Could not load the library folder.";
     } finally {
+      folderProgress.hidden = true;
       folderBusy = false;
     }
   });
@@ -889,7 +965,6 @@ function init() {
     if (watch !== null) navigator.geolocation.clearWatch(watch);
     watch = null;
     current = null;
-    snapRecording.disabled = false;
     byId("dot").classList.remove("active");
     record.innerHTML = '<span aria-hidden="true">●</span> Start recording';
     status.textContent = message;
@@ -920,20 +995,23 @@ function init() {
     }
   }
 
+  function outingGeometry(outing) {
+    return {
+      type: "GeometryCollection",
+      geometries: outing.segments.map(segment => segment.length < 2 ? null : {
+        type: "LineString", coordinates: segment.map(({ lat, lng }) => [lng, lat])
+      })
+    };
+  }
+
   async function finishRecording(outing, preview) {
-    if (!snapRecording.checked || !outing.segments.some(segment => segment.length > 1)) return;
+    if (!preview || !outing.segments.some(segment => segment.length > 1)) return;
     matchingRecording = true;
     record.disabled = true;
-    snapRecording.disabled = true;
     status.textContent = "Matching recording to walking routes…";
     try {
       await preview?.pending;
-      const result = await matchStreetGeometry({
-        type: "GeometryCollection",
-        geometries: outing.segments.map(segment => segment.length < 2 ? null : {
-          type: "LineString", coordinates: segment.map(({ lat, lng }) => [lng, lat])
-        })
-      }, preview?.cache);
+      const result = await matchStreetGeometry(outingGeometry(outing), preview.cache);
       if (!result.matched) {
         status.textContent = "Street match unavailable. Original GPS trail saved.";
         return;
@@ -958,8 +1036,7 @@ function init() {
       refreshMap();
       matchingRecording = false;
       record.disabled = false;
-      snapRecording.disabled = false;
-    }
+      }
   }
 
   function geoError(error) {
@@ -1028,8 +1105,7 @@ function init() {
     if (folderBusy) return;
     const outing = { id: crypto.randomUUID(), segments: [] };
     current = outing;
-    liveMatch = snapRecording.checked ? { outing, cache: new Map(), segments: new Map(), busy: false } : null;
-    snapRecording.disabled = true;
+    liveMatch = snapStreets.checked ? { outing, cache: new Map(), segments: new Map(), busy: false } : null;
     breakTrail = false;
     byId("dot").classList.add("active");
     record.innerHTML = '<span aria-hidden="true">■</span> Stop recording';

@@ -42,8 +42,8 @@ h2{font-size:1rem;margin:0 0 12px}
 
 .snap-option{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:.875rem;cursor:pointer}
 .snap-option input{width:17px;height:17px;margin:0;accent-color:var(--green)}
-#snap-note,#snap-recording-note{font-size:.8rem;margin-top:4px}
-#snap-note a,#snap-recording-note a{color:var(--green)}
+#snap-recording-note{font-size:.8rem;margin-top:4px}
+#snap-recording-note a{color:var(--green)}
 
 #photo-status:not(:empty){margin-top:8px;font-size:.875rem}
 .samples{display:flex;flex-wrap:wrap;gap:0 12px}
@@ -67,3 +67,5 @@ h2{font-size:1rem;margin:0 0 12px}
 #server-folder-form{margin-top:8px}
 #server-folder-form label{display:block;margin-bottom:4px}
 #server-folder-path{min-height:44px;max-width:100%;font:inherit;border:1px solid var(--line);border-radius:9px;padding:6px 8px}
+
+progress:not([hidden]){display:block;width:100%;margin-top:8px;accent-color:var(--green)}
