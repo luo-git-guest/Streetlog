@@ -371,14 +371,14 @@ function init() {
     const shouldSnap = snapStreets.checked;
     importProgress.removeAttribute("value");
     importProgress.hidden = false;
-    importStatus.textContent = shouldSnap ? "Matching to streets…" : "Importing…";
+    importStatus.textContent = `Reading ${file.name}…`;
     try {
       const data = JSON.parse(await file.text());
       if (!data || typeof data.type !== "string") throw new Error("Missing GeoJSON type");
       const result = shouldSnap ? await matchStreetGeometry(data, undefined, (done, total) => {
         importProgress.max = total;
         importProgress.value = done;
-        importStatus.textContent = `Matching streets · ${done} of ${total} sections processed`;
+        importStatus.textContent = `Matching streets · ${file.name} · ${done} of ${total} sections processed`;
       }) : { data };
       const bounds = plotImportedRoute({
         id: crypto.randomUUID(), name: file.name, data: result.data, snapped: Boolean(result.matched)
@@ -717,13 +717,15 @@ function init() {
     let done = 0;
     const total = files.routes.length + files.photos.length;
     const shouldSnap = snapStreets.checked;
-    const progress = (matched, batches) => {
-      folderProgress.value = done + matched / batches;
-      folderStatus.textContent = `Matching streets · File ${done + 1} of ${total} · ${matched} of ${batches} sections processed`;
-    };
     folderProgress.max = Math.max(1, total);
     folderProgress.value = 0;
     for (const entry of files.routes) {
+      const fileLabel = `File ${done + 1} of ${total} · ${entry.name}`;
+      folderStatus.textContent = `Reading route · ${fileLabel}`;
+      const progress = (matched, batches) => {
+        folderProgress.value = done + matched / batches;
+        folderStatus.textContent = `Matching streets · ${fileLabel} · ${matched} of ${batches} sections processed`;
+      };
       try {
         const data = JSON.parse(await (await entry.getFile()).text());
         const saved = data.streetlogOuting;
@@ -753,6 +755,7 @@ function init() {
       }
     }
     for (const entry of files.photos) {
+      folderStatus.textContent = `Reading photo · File ${done + 1} of ${total} · ${entry.name}`;
       try {
         const id = photoFileId(entry.name);
         if (photos.some(photo => photo.id === id)) continue;

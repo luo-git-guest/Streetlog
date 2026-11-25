@@ -69,3 +69,5 @@ h2{font-size:1rem;margin:0 0 12px}
 #server-folder-path{min-height:44px;max-width:100%;font:inherit;border:1px solid var(--line);border-radius:9px;padding:6px 8px}
 
 progress:not([hidden]){display:block;width:100%;margin-top:8px;accent-color:var(--green)}
+
+#import-status,#folder-status{overflow-wrap:anywhere}
