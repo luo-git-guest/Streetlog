@@ -64,22 +64,45 @@ function matchAnchorIndices(coordinates, includeEnd = true, limit = Infinity) {
   return anchors;
 }
 
-function countMatchBatches(geometry, anchorsFor) {
+function streetMatchMark(value) {
+  return value?.type === "Feature" ? value.properties ?? {} : value ?? {};
+}
+
+function lineMatchStatuses(geometry, mark = geometry) {
+  const count = geometry.type === "LineString" ? 1 : geometry.coordinates.length;
+  if (mark?.streetSnapped === true) return Array(count).fill(true);
+  const statuses = mark?.streetSnappedParts;
+  return Array.from({ length: count }, (_, index) => statuses?.[index] === true);
+}
+
+function countMatchBatches(geometry, anchorsFor, mark = streetMatchMark(geometry)) {
+  if (mark.streetSnapped === true) return 0;
   switch (geometry?.type) {
     case "FeatureCollection":
       return geometry.features.reduce((sum, child) => sum + countMatchBatches(child, anchorsFor), 0);
     case "Feature":
-      return countMatchBatches(geometry.geometry, anchorsFor);
+      return countMatchBatches(geometry.geometry, anchorsFor, { ...geometry.geometry, ...mark });
     case "GeometryCollection":
       return geometry.geometries.reduce((sum, child) => sum + countMatchBatches(child, anchorsFor), 0);
     case "MultiLineString":
-      return geometry.coordinates.reduce((sum, line) =>
-        sum + Math.max(0, Math.ceil((anchorsFor(line).length - 1) / (matchBatchSize - 1))), 0);
-    case "LineString":
-      return Math.max(0, Math.ceil((anchorsFor(geometry.coordinates).length - 1) / (matchBatchSize - 1)));
+    case "LineString": {
+      const lines = geometry.type === "LineString" ? [geometry.coordinates] : geometry.coordinates;
+      const statuses = lineMatchStatuses(geometry, mark);
+      return lines.reduce((sum, line, index) => sum + (statuses[index] ? 0 :
+        Math.max(0, Math.ceil((anchorsFor(line).length - 1) / (matchBatchSize - 1)))), 0);
+    }
     default:
       return 0;
   }
+}
+
+function containsSnappedRoute(data) {
+  const mark = streetMatchMark(data);
+  if (mark.streetSnapped === true || (Array.isArray(mark.streetSnappedParts) && mark.streetSnappedParts.includes(true))) return true;
+  if (data?.type === "Feature") return containsSnappedRoute(data.geometry);
+  if (data?.type === "FeatureCollection") return data.features.some(containsSnappedRoute);
+  if (data?.type === "GeometryCollection") return data.geometries.some(containsSnappedRoute);
+  return false;
 }
 
 async function matchStreetGeometry(data, cache, onProgress) {
@@ -108,7 +131,7 @@ async function matchStreetGeometry(data, cache, onProgress) {
         }).join(";");
         const cached = cache?.get(positions);
         if (cached) {
-          lines.push(cached);
+          lines.push({ coordinates: cached, snapped: true });
           matched++;
           continue;
         }
@@ -133,10 +156,10 @@ async function matchStreetGeometry(data, cache, onProgress) {
           throw new Error("Invalid snapped route");
         }
         cache?.set(positions, geometry.coordinates);
-        lines.push(geometry.coordinates);
+        lines.push({ coordinates: geometry.coordinates, snapped: true });
         matched++;
       } catch {
-        lines.push(coordinates.slice(batch[0], batch.at(-1) + 1));
+        lines.push({ coordinates: coordinates.slice(batch[0], batch.at(-1) + 1), snapped: false });
         unmatched++;
       } finally {
         if (total) onProgress(matched + unmatched, total);
@@ -145,16 +168,26 @@ async function matchStreetGeometry(data, cache, onProgress) {
     return lines;
   }
 
-  async function visit(value) {
-    if (!value) return value;
+  async function visit(value, mark = streetMatchMark(value)) {
+    if (!value || mark.streetSnapped === true) return value;
     switch (value.type) {
       case "FeatureCollection": {
         const features = [];
         for (const feature of value.features) features.push(await visit(feature));
         return { ...value, features };
       }
-      case "Feature":
-        return { ...value, geometry: await visit(value.geometry) };
+      case "Feature": {
+        const geometry = await visit(value.geometry, { ...value.geometry, ...mark });
+        if (geometry === value.geometry || geometry?.streetSnapped === undefined) return { ...value, geometry };
+        const { streetSnapped, streetSnappedParts, ...geoJSON } = geometry;
+        return {
+          ...value, geometry: geoJSON, properties: {
+            ...value.properties, streetSnapped, streetSnappedParts,
+            ...(streetSnappedParts.some(Boolean) && value.geometry.type === "LineString" &&
+              !value.properties?.originalCoordinates ? { originalCoordinates: value.geometry.coordinates } : {})
+          }
+        };
+      }
       case "GeometryCollection": {
         const geometries = [];
         for (const geometry of value.geometries) geometries.push(await visit(geometry));
@@ -163,9 +196,16 @@ async function matchStreetGeometry(data, cache, onProgress) {
       case "LineString":
       case "MultiLineString": {
         const lines = value.type === "LineString" ? [value.coordinates] : value.coordinates;
-        const coordinates = [];
-        for (const line of lines) coordinates.push(...await matchLine(line));
-        return { type: "MultiLineString", coordinates };
+        const statuses = lineMatchStatuses(value, mark);
+        if (statuses.length && statuses.every(Boolean)) return value;
+        const parts = [];
+        for (const [index, line] of lines.entries()) {
+          if (statuses[index] || line.length < 2) parts.push({ coordinates: line, snapped: statuses[index] });
+          else parts.push(...await matchLine(line));
+        }
+        const streetSnappedParts = parts.map(part => part.snapped);
+        return { type: "MultiLineString", coordinates: parts.map(part => part.coordinates),
+          streetSnapped: parts.length > 0 && streetSnappedParts.every(Boolean), streetSnappedParts };
       }
       default:
         return value;
@@ -205,7 +245,7 @@ function importedOutingGroups(route) {
       groups.set(sourceID, {
         key: JSON.stringify([route.id, sourceID]), routeID: route.id, sourceID,
         name: route.name || properties.name || "Imported route",
-        segments: [], matchedSegments: [], features: [], snapped: route.snapped
+        segments: [], matchedSegments: [], matchStatuses: [], features: [], snapped: route.snapped
       });
     }
     const group = groups.get(sourceID);
@@ -227,8 +267,11 @@ function importedOutingGroups(route) {
       }));
       const moved = preserveOriginal && (paths.length > 1 || JSON.stringify(paths[0]) !== JSON.stringify(path));
       group.matchedSegments.push(moved ? paths : null);
+      const mark = { ...feature.geometry, ...properties };
+      const statuses = paths.map((_, index) => mark.streetSnapped === true || mark.streetSnappedParts?.[index] === true);
+      group.matchStatuses.push(preserveOriginal ? statuses : [statuses[pathIndex]]);
     });
-    if (embedded.length) group.snapped = true;
+    if (containsSnappedRoute(feature)) group.snapped = true;
   });
   return [...groups.values()].map((group, index) => ({
     ...group, name: groups.size > 1 ? `${group.name} · Outing ${index + 1}` : group.name
@@ -512,7 +555,7 @@ function init() {
         importStatus.textContent = `Matching streets · ${file.name} · ${done} of ${total} sections processed`;
       }) : { data };
       const bounds = plotImportedRoute({
-        id: crypto.randomUUID(), name: file.name, data: result.data, sourceData: result.matched ? data : undefined, snapped: Boolean(result.matched)
+        id: crypto.randomUUID(), name: file.name, data: result.data, sourceData: result.matched ? data : undefined, snapped: containsSnappedRoute(result.data)
       });
       if (!bounds) {
         importStatus.textContent = "This file has no map features to display.";
@@ -926,6 +969,7 @@ function init() {
   let folderWrite = Promise.resolve();
   let folderBusy = false;
   const folderOutingFiles = new Map();
+  const folderImportFiles = new Map();
   const readOnlyOutings = new Set();
 
   function rememberFolderOuting(id, handle, name) {
@@ -953,7 +997,8 @@ function init() {
     const existing = outings[index];
     const count = item => item.segments.reduce((sum, segment) => sum + segment.length, 0);
     if (existing !== current && (count(outing) > count(existing) ||
-        (count(outing) === count(existing) && outing.matchedSegments && !existing.matchedSegments))) {
+        (count(outing) === count(existing) && outing.matchedSegments &&
+          (!existing.matchedSegments || (outing.matchStatuses && !existing.matchStatuses))))) {
       outings[index] = outing;
     }
   }
@@ -984,23 +1029,23 @@ function init() {
         if (saved && typeof saved.id === "string" && Array.isArray(saved.segments) &&
             saved.segments.length && saved.segments.every(segment => Array.isArray(segment) && segment.length &&
               segment.every(point => Number.isFinite(point?.lat) && Number.isFinite(point?.lng)))) {
-          if (shouldSnap && !saved.matchedSegments) {
-            const result = await matchStreetGeometry(outingGeometry(saved), undefined, progress);
+          if (shouldSnap) {
+            const result = await matchStreetGeometry(outingGeometry(saved, true), undefined, progress);
             unmatched += result.unmatched;
-            if (result.matched) saved.matchedSegments = result.data.geometries.map(geometry => geometry?.coordinates ?? null);
+            if (result.matched) applyStreetMatch(saved, result.data);
           }
           mergeOuting(saved);
           rememberFolderOuting(saved.id, handle, entry.name);
         } else {
           const id = data.streetlogImport?.id || `folder-route:${entry.name}`;
           if (importedRoutes.some(route => route.id === id)) continue;
-          const alreadySnapped = Boolean(data.streetlogImport?.snapped);
-          const result = shouldSnap && !alreadySnapped
+          const result = shouldSnap
             ? await matchStreetGeometry(data, undefined, progress) : { data, unmatched: 0 };
           unmatched += result.unmatched;
           if (!plotImportedRoute({ id, name: entry.name, data: result.data,
-            sourceData: result.matched ? data : data.streetlogImport?.sourceData,
-            snapped: alreadySnapped || Boolean(result.matched) })) skipped++;
+            sourceData: data.streetlogImport?.sourceData ?? (result.matched ? data : undefined),
+            snapped: containsSnappedRoute(result.data) })) skipped++;
+          else if (handle) folderImportFiles.set(id, { handle, name: entry.name, updated: Boolean(result.matched) });
         }
       } catch {
         skipped++;
@@ -1238,6 +1283,7 @@ function init() {
         } else {
           const outing = { id, name: group.name, segments: group.segments };
           if (group.matchedSegments.some(Boolean)) outing.matchedSegments = group.matchedSegments;
+          outing.matchStatuses = group.matchStatuses;
           outing.snapped = Boolean(group.snapped);
           if (handle) await writeFolderOuting(handle, outing);
           else saveBrowserOuting(outing);
@@ -1267,15 +1313,27 @@ function init() {
     folderBusy = true;
     saveFolder.disabled = true;
     const handle = activeFolder;
+    const updated = importedRoutes.filter(route => {
+      const origin = folderImportFiles.get(route.id);
+      return origin?.handle === handle && origin.updated;
+    }).length;
+    const saveMatches = updated === 0 || window.confirm(
+      `Update the geometry and snap status in ${updated} existing GeoJSON files? Original GPS coordinates will be kept in the files.`
+    );
     folderStatus.textContent = "Saving library folder…";
     try {
       for (const outing of outings) await writeFolderOuting(handle, outing);
       for (const route of importedRoutes) {
-        if (route.id.startsWith("folder-route:")) continue;
-        const name = `import-${encodeURIComponent(route.id)}.geojson`;
-        await folderLibrary.write(handle, "routes", name, JSON.stringify({
+        const origin = folderImportFiles.get(route.id);
+        const inCurrentFolder = origin?.handle === handle;
+        if (inCurrentFolder && (!origin.updated || !saveMatches)) continue;
+        if (!inCurrentFolder && route.id.startsWith("folder-route:")) continue;
+        const name = inCurrentFolder ? origin.name : `import-${encodeURIComponent(route.id)}.geojson`;
+        const data = JSON.stringify({
           ...route.data, streetlogImport: { id: route.id, snapped: route.snapped, sourceData: route.sourceData }
-        }));
+        });
+        await folderLibrary.write(handle, "routes", name, data, inCurrentFolder);
+        folderImportFiles.set(route.id, { handle, name, updated: false });
       }
       for (const photo of photos) {
         const name = photo.id.startsWith("folder-photo:") ? photo.name : `streetlog-${photo.id}.jpg`;
@@ -1345,13 +1403,29 @@ function init() {
     }
   }
 
-  function outingGeometry(outing) {
+  function outingGeometry(outing, useSaved = false) {
     return {
       type: "GeometryCollection",
-      geometries: outing.segments.map(segment => segment.length < 2 ? null : {
-        type: "LineString", coordinates: segment.map(({ lat, lng }) => [lng, lat])
+      geometries: outing.segments.map((segment, index) => {
+        if (segment.length < 2) return null;
+        const statuses = useSaved ? outing.matchStatuses?.[index] : null;
+        const matched = statuses && outing.matchedSegments?.[index];
+        const streetSnapped = Boolean(statuses?.length && statuses.every(Boolean));
+        if (matched) {
+          return { type: "MultiLineString", coordinates: matched, streetSnapped, streetSnappedParts: statuses };
+        }
+        return { type: "LineString", coordinates: segment.map(({ lat, lng }) => [lng, lat]), streetSnapped };
       })
     };
+  }
+
+  function applyStreetMatch(outing, geometry) {
+    outing.matchedSegments = geometry.geometries.map(section =>
+      section?.type === "MultiLineString" ? section.coordinates :
+        section?.streetSnapped ? [section.coordinates] : null);
+    outing.matchStatuses = geometry.geometries.map(section =>
+      section?.streetSnappedParts ?? (section?.streetSnapped ? [true] : null));
+    outing.snapped = containsSnappedRoute(geometry);
   }
 
   async function finishRecording(outing, preview) {
@@ -1366,12 +1440,14 @@ function init() {
         status.textContent = "Street match unavailable. Original GPS trail saved.";
         return;
       }
-      outing.matchedSegments = result.data.geometries.map(geometry => geometry?.coordinates ?? null);
+      applyStreetMatch(outing, result.data);
       try {
         if (activeFolder) await writeFolderOuting(activeFolder, outing);
         else saveBrowserOuting(outing);
       } catch {
         delete outing.matchedSegments;
+        delete outing.matchStatuses;
+        delete outing.snapped;
         status.textContent = "Could not save the street match. Original GPS trail kept.";
         return;
       }
@@ -1498,10 +1574,13 @@ function init() {
       const coordinates = segment.map(point => [point.lng, point.lat]);
       const singlePoint = coordinates.length === 1;
       const matched = outing.matchedSegments?.[index];
+      const statuses = outing.matchStatuses?.[index] ?? (matched ? matched.map(() => false) : [false]);
       return {
         type: "Feature",
         properties: {
           outing: outing.id,
+          streetSnapped: !singlePoint && statuses.every(Boolean),
+          ...(matched ? { streetSnappedParts: statuses } : {}),
           timestamps: segment.map(point => Number.isFinite(point.time) && Number.isFinite(new Date(point.time).getTime())
             ? new Date(point.time).toISOString() : null),
           accuracyMeters: segment.map(point => point.accuracy),
