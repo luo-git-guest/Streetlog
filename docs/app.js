@@ -515,6 +515,47 @@ function init() {
   });
   const importedStyle = { color: "#007985", weight: 5, opacity: 0.9 };
 
+  function bindPublishedPhotos(layer, folder, availablePhotos) {
+    const names = layer.feature?.properties?.photoFileNames;
+    if (!Array.isArray(names)) return;
+    const photos = [...new Set(names)].filter(name => availablePhotos.has(name));
+    if (!photos.length) return;
+
+    function gallery(preview) {
+      const container = document.createElement("div");
+      container.className = preview ? "published-photo-preview" : "published-photo-gallery";
+      const visiblePhotos = preview ? photos.slice(0, 3) : photos;
+      visiblePhotos.forEach((name, index) => {
+        const url = new URL(encodeURIComponent(name), folder).href;
+        const image = document.createElement("img");
+        image.src = url;
+        image.alt = `Outing photo ${index + 1}`;
+        image.decoding = "async";
+        if (preview) {
+          container.append(image);
+        } else {
+          const link = document.createElement("a");
+          link.href = url;
+          link.target = "_blank";
+          link.rel = "noopener";
+          link.setAttribute("aria-label", `Open outing photo ${index + 1} at full size`);
+          link.append(image);
+          container.append(link);
+        }
+      });
+      if (preview && photos.length > visiblePhotos.length) {
+        const count = document.createElement("span");
+        count.textContent = `+${photos.length - visiblePhotos.length}`;
+        container.append(count);
+      }
+      return container;
+    }
+
+    layer.bindTooltip(() => gallery(true), { sticky: true, direction: "top" });
+    layer.bindPopup(() => gallery(false), { maxWidth: 360 });
+    layer.on("popupopen", () => layer.closeTooltip());
+  }
+
   function plotImportedRoute(route) {
     const layer = L.geoJSON(route.data, {
       style: importedStyle,
@@ -1354,6 +1395,7 @@ function init() {
     const base = new URL(".", document.baseURI);
     let folder;
     let files;
+    let availablePhotos;
     try {
       const config = await fetch(new URL("site.json", base), { cache: "no-cache" });
       if (config.status === 404) return;
@@ -1365,7 +1407,10 @@ function init() {
           folder.search || folder.hash) throw new Error("GeoJSON_folder must be inside the published site.");
       const response = await fetch(new URL("index.json", folder), { cache: "no-cache" });
       if (!response.ok) throw new Error("Could not read the GeoJSON folder’s index.json.");
-      ({ files } = await response.json());
+      const manifest = await response.json();
+      ({ files } = manifest);
+      availablePhotos = new Set(Array.isArray(manifest.photos) ? manifest.photos.filter(name =>
+        typeof name === "string" && /^[^/\\]+\.(?:jpe?g|png|webp|avif|gif)$/i.test(name)) : []);
       if (!Array.isArray(files) || !files.every(name =>
         typeof name === "string" && /^[^/\\]+\.geojson$/i.test(name))) {
         throw new Error("index.json must list GeoJSON filenames in its files array.");
@@ -1381,7 +1426,11 @@ function init() {
     for (const name of new Set(files)) {
       const url = new URL(encodeURIComponent(name), folder);
       const id = `published:${url.pathname}`;
-      if (importLayers.has(id)) continue;
+      const existing = importLayers.get(id);
+      if (existing) {
+        existing.eachLayer(layer => bindPublishedPhotos(layer, folder, availablePhotos));
+        continue;
+      }
       publishedStatus.textContent = `Loading published route · ${name}`;
       try {
         const response = await fetch(url, { cache: "no-cache" });
@@ -1389,6 +1438,7 @@ function init() {
         const data = await response.json();
         const plotted = plotImportedRoute({ id, name, data, snapped: containsSnappedRoute(data) });
         if (!plotted) throw new Error("No map geometry found.");
+        importLayers.get(id).eachLayer(layer => bindPublishedPhotos(layer, folder, availablePhotos));
         bounds.extend(plotted);
         loaded++;
       } catch {

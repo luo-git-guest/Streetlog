@@ -23,13 +23,14 @@ def build_pages(repository: Path, output: Path) -> None:
     shutil.copyfile(config_file, output / "site.json")
     folder = output / relative_folder
     folder.mkdir(parents=True, exist_ok=True)
-    files = sorted(
-        (file.name for file in folder.iterdir() if file.is_file() and file.suffix.lower() == ".geojson"),
-        key=lambda name: (name.casefold(), name),
-    )
-    manifest = json.dumps({"files": files}, ensure_ascii=False, indent=2) + "\n"
+    names = sorted((file.name for file in folder.iterdir() if file.is_file()),
+                   key=lambda name: (name.casefold(), name))
+    files = [name for name in names if Path(name).suffix.lower() == ".geojson"]
+    image_types = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}
+    photos = [name for name in names if Path(name).suffix.lower() in image_types]
+    manifest = json.dumps({"files": files, "photos": photos}, ensure_ascii=False, indent=2) + "\n"
     (folder / "index.json").write_text(manifest, encoding="utf-8")
-    print(f"Indexed {len(files)} GeoJSON files in docs/{relative_folder}/.")
+    print(f"Indexed {len(files)} GeoJSON files and {len(photos)} photos in docs/{relative_folder}/.")
 
 
 if __name__ == "__main__":
