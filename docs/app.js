@@ -383,12 +383,28 @@ function init() {
   const layerList = byId("category-layers");
   const draftFields = byId("outing-draft");
   const draftCategory = byId("draft-category");
+  const localCategoryKey = "streetlog.custom-categories";
+  const localCategories = new Set();
+  try {
+    const names = JSON.parse(localStorage.getItem(localCategoryKey) || "[]");
+    if (Array.isArray(names)) {
+      for (const name of names) {
+        if (typeof name === "string" && name.trim()) localCategories.add(name.trim());
+      }
+    }
+  } catch {
+    // Categories can still be created for this visit.
+  }
+  const categoryDetails = byId("draft-new-category");
+  const categoryInput = byId("draft-category-name");
+  const categoryStatus = byId("draft-category-status");
   const draftDescription = byId("draft-description");
   const draftExport = byId("export-draft");
   const pushDraft = byId("push-draft");
   const discardDraft = byId("discard-draft");
   const githubForm = byId("github-form");
   const githubToken = byId("github-token");
+  const rememberGitHub = byId("github-remember");
   const githubLink = byId("github-link");
   const githubUnlink = byId("github-unlink");
   const githubStatus = byId("github-status");
@@ -396,6 +412,7 @@ function init() {
   let githubFolder;
   let githubClient;
   let githubTarget;
+  let linkedToken = "";
   let publishing = false;
   let linking = false;
   const gpsAvailable = Boolean(navigator.geolocation && window.isSecureContext);
@@ -1685,14 +1702,53 @@ function init() {
     link.textContent = repo;
     byId("github-repository").replaceChildren(link);
     syncCaptureControls();
+    let savedToken;
+    try {
+      savedToken = localStorage.getItem(githubTokenKey());
+    } catch {
+      // Linking still works for the current visit.
+    }
+    rememberGitHub.checked = Boolean(savedToken);
+    if (savedToken) linkGitHub(savedToken, true);
   }
 
-  githubForm.addEventListener("submit", async event => {
+  function githubTokenKey() {
+    return "streetlog.github-token." + githubRepo.join("/").toLowerCase();
+  }
+
+  function storeGitHubPreference() {
+    try {
+      if (rememberGitHub.checked && linkedToken) {
+        localStorage.setItem(githubTokenKey(), linkedToken);
+      } else {
+        localStorage.removeItem(githubTokenKey());
+      }
+      return true;
+    } catch {
+      rememberGitHub.checked = false;
+      githubStatus.textContent = "Could not update the saved token. Check browser storage permissions.";
+      return false;
+    }
+  }
+
+  rememberGitHub.addEventListener("change", () => {
+    if (!githubRepo || (rememberGitHub.checked && !linkedToken)) return;
+    syncCaptureControls();
+    if (storeGitHubPreference()) {
+      githubStatus.textContent = rememberGitHub.checked
+        ? "Token saved in this browser." : "Token will be forgotten after this visit.";
+    }
+  });
+
+  githubForm.addEventListener("submit", event => {
     event.preventDefault();
     if (!githubRepo || githubLink.disabled) return;
     const token = githubToken.value.trim();
     githubToken.value = "";
-    if (!token) return;
+    if (token) return linkGitHub(token);
+  });
+
+  async function linkGitHub(token, restoring = false) {
     linking = true;
     syncCaptureControls();
     githubStatus.textContent = "Checking GitHub account and repository…";
@@ -1702,25 +1758,34 @@ function init() {
       const target = await client.inspect(githubRepo, githubFolder, account);
       githubClient = client;
       githubTarget = target;
+      linkedToken = token;
       byId("github-account").textContent = `${account} · ${target.role}`;
       githubStatus.textContent = `Ready · ${target.branch} / ${target.path}`;
       githubForm.hidden = true;
       githubUnlink.hidden = false;
+      if (!restoring) storeGitHubPreference();
     } catch (error) {
       githubStatus.textContent = `Could not link GitHub: ${error.message}`;
+      if (restoring && error.status === 401) {
+        rememberGitHub.checked = false;
+        storeGitHubPreference();
+      }
     } finally {
       linking = false;
       syncCaptureControls();
     }
-  });
+  }
 
   githubUnlink.addEventListener("click", () => {
-    if (publishing) return;
+    if (publishing || linking) return;
     githubClient = githubTarget = null;
+    linkedToken = "";
+    rememberGitHub.checked = false;
     byId("github-account").textContent = "Guest · no account linked";
     githubStatus.textContent = "";
     githubUnlink.hidden = true;
     githubForm.hidden = false;
+    storeGitHubPreference();
     syncCaptureControls();
   });
 
@@ -1764,16 +1829,20 @@ function init() {
     draftFields.hidden = !draft;
     draftExport.disabled = matchingRecording || publishing;
     discardDraft.disabled = publishing;
-    draftCategory.disabled = draftDescription.disabled = publishing;
+    draftCategory.disabled = draftDescription.disabled = categoryInput.disabled = byId("draft-category-add").disabled = publishing;
     pushDraft.disabled = !draft || !githubTarget || matchingRecording || publishing;
-    githubUnlink.disabled = publishing;
-    githubToken.disabled = githubLink.disabled = !githubRepo || publishing || linking;
+    githubUnlink.disabled = publishing || linking;
+    githubToken.disabled = githubLink.disabled = rememberGitHub.disabled = !githubRepo || publishing || linking;
+    githubUnlink.hidden = !githubTarget && !rememberGitHub.checked;
   }
 
   function showDraft(outing, message) {
     draft = outing;
     draftCategory.value = categoryName(outing.category);
     draftDescription.value = outing.description ?? "";
+    categoryDetails.open = false;
+    categoryInput.value = "";
+    categoryStatus.textContent = "";
     status.textContent = message;
     hint.textContent = "Export or discard this outing before starting another.";
     syncCaptureControls();
@@ -1971,16 +2040,44 @@ function init() {
     }, { ...gpsOptions, maximumAge: 10000 });
   });
 
-  draftCategory.addEventListener("change", () => {
-    if (!draft) return;
-    draft.category = draftCategory.value;
-    const entry = getCategory(draft.category);
+  function selectDraftCategory(value) {
+    if (!draft || publishing) return;
+    const entry = getCategory(categoryKey(value) === categoryKey(uncategorized) ? uncategorized : value);
+    draft.category = draftCategory.value = entry.name;
     if (!styleFor(entry).visible) {
       saveLayerPreferences(entry, { ...overrides.get(entry.key), visible: true });
       renderLayerControls();
     }
     refreshMap();
+  }
+
+  draftCategory.addEventListener("change", () => selectDraftCategory(draftCategory.value));
+
+  byId("draft-category-form").addEventListener("submit", event => {
+    event.preventDefault();
+    if (!draft || publishing) return;
+    const name = categoryInput.value.trim();
+    if (!name) {
+      categoryStatus.textContent = "Enter a category name.";
+      return;
+    }
+    const existing = categoryKey(name) === categoryKey(uncategorized) || categoryLayers.has(categoryKey(name));
+    selectDraftCategory(name);
+    if (existing) {
+      categoryStatus.textContent = "Selected the existing category.";
+    } else {
+      localCategories.add(name);
+      try {
+        localStorage.setItem(localCategoryKey, JSON.stringify([...localCategories]));
+        categoryStatus.textContent = "Category added.";
+      } catch {
+        categoryStatus.textContent = "Category added for this visit.";
+      }
+    }
+    categoryInput.value = "";
+    categoryDetails.open = false;
   });
+
   draftDescription.addEventListener("input", () => {
     if (draft) draft.description = draftDescription.value;
   });
@@ -2065,6 +2162,7 @@ function init() {
     downloadOutings(selected, checkedRecorded.size ? "streetlog-selected.geojson" : "streetlog.geojson");
   });
 
+  for (const name of localCategories) getCategory(name);
   syncCaptureControls();
   if (!gpsAvailable) {
     locate.disabled = true;

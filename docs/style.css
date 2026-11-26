@@ -120,3 +120,10 @@ progress:not([hidden]){display:block;width:100%;margin-top:8px;accent-color:var(
 .github-settings summary{cursor:pointer;font-weight:700}
 .github-settings p,.github-settings form,.github-settings button{margin-top:8px}
 #github-token{display:block;width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;font:inherit}
+
+#draft-new-category{margin:0 0 10px}
+#draft-new-category summary{cursor:pointer;font-size:.875rem;font-weight:680}
+#draft-category-form{margin-top:8px}
+.category-create-row{display:flex;align-items:center;gap:6px}
+.category-create-row input{flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;padding:6px;font:inherit}
+#draft-category-status:not(:empty){margin-bottom:8px;font-size:.8rem}
