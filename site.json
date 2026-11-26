@@ -1,0 +1,14 @@
+{
+  "site_name": "Streetlog",
+  "GeoJSON_folder": "GeoJSON",
+  "categories": [
+    {
+      "name": "Uncategorized",
+      "style": {
+        "stroke": "#007985",
+        "stroke-width": "5px",
+        "stroke-opacity": 0.9
+      }
+    }
+  ]
+}
