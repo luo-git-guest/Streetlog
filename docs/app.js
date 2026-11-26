@@ -400,6 +400,11 @@ function init() {
   const categoryStatus = byId("draft-category-status");
   const draftDescription = byId("draft-description");
   const draftExport = byId("export-draft");
+  const photoPicker = byId("draft-photo-picker");
+  const draftPhotoFiles = byId("draft-photo-files");
+  const draftPhotoStatus = byId("draft-photo-status");
+  const draftPhotoList = byId("draft-photo-list");
+  let preparingPhotos = false;
   const pushDraft = byId("push-draft");
   const discardDraft = byId("discard-draft");
   const githubForm = byId("github-form");
@@ -1790,11 +1795,13 @@ function init() {
   });
 
   pushDraft.addEventListener("click", async () => {
-    if (!draft || !githubTarget || matchingRecording || publishing) return;
+    if (!draft || !githubTarget || matchingRecording || preparingPhotos || publishing) return;
     const target = githubTarget;
     const outing = draft;
     const audience = target.isPrivate ? "" : " This outing can become publicly visible.";
-    if (!window.confirm(`Upload this outing to ${target.repo.join("/")}/${target.path}?${audience}`)) return;
+    const photos = outing.album ?? [];
+    const attachments = photos.length ? ` and ${photos.length} attached photo${photos.length === 1 ? "" : "s"}` : "";
+    if (!window.confirm(`Upload this outing${attachments} to ${target.repo.join("/")}/${target.path}?${audience}`)) return;
     publishing = true;
     syncCaptureControls();
     byId("github-settings").open = true;
@@ -1806,7 +1813,7 @@ function init() {
         throw new Error("The publishing destination changed. Review it before retrying.");
       }
       const result = await githubClient.upload(latest, `streetlog-${outing.kind}-${outing.id}.geojson`,
-        JSON.stringify({ type: "FeatureCollection", features: outingFeatures(outing) }));
+        JSON.stringify({ type: "FeatureCollection", features: outingFeatures(outing) }), photos);
       const link = document.createElement("a");
       link.href = result.url;
       link.textContent = result.pullRequest ? "View pull request" : "View GitHub commit";
@@ -1827,10 +1834,12 @@ function init() {
     dropPin.disabled = !gpsAvailable || locatingPin || Boolean(current || draft);
     snapStreets.disabled = Boolean(current || draft) || locatingPin;
     draftFields.hidden = !draft;
-    draftExport.disabled = matchingRecording || publishing;
+    draftExport.disabled = matchingRecording || preparingPhotos || publishing;
+    photoPicker.disabled = preparingPhotos || publishing;
+    for (const button of draftPhotoList.querySelectorAll("button")) button.disabled = publishing;
     discardDraft.disabled = publishing;
     draftCategory.disabled = draftDescription.disabled = categoryInput.disabled = byId("draft-category-add").disabled = publishing;
-    pushDraft.disabled = !draft || !githubTarget || matchingRecording || publishing;
+    pushDraft.disabled = !draft || !githubTarget || matchingRecording || preparingPhotos || publishing;
     githubUnlink.disabled = publishing || linking;
     githubToken.disabled = githubLink.disabled = rememberGitHub.disabled = !githubRepo || publishing || linking;
     githubUnlink.hidden = !githubTarget && !rememberGitHub.checked;
@@ -1843,6 +1852,8 @@ function init() {
     categoryDetails.open = false;
     categoryInput.value = "";
     categoryStatus.textContent = "";
+    draftPhotoStatus.textContent = "";
+    renderDraftAlbum();
     status.textContent = message;
     hint.textContent = "Export or discard this outing before starting another.";
     syncCaptureControls();
@@ -1850,7 +1861,11 @@ function init() {
   }
 
   function closeDraft(message) {
+    for (const photo of draft?.album ?? []) URL.revokeObjectURL(photo.preview);
     draft = null;
+    preparingPhotos = false;
+    draftPhotoStatus.textContent = "";
+    renderDraftAlbum();
     liveMatch = null;
     matchingRecording = false;
     status.textContent = message;
@@ -2040,6 +2055,107 @@ function init() {
     }, { ...gpsOptions, maximumAge: 10000 });
   });
 
+  async function sanitizePhoto(file) {
+    const bitmap = await createImageBitmap(file);
+    const canvas = document.createElement("canvas");
+    try {
+      const scale = Math.min(1, 4096 / Math.max(bitmap.width, bitmap.height));
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext("2d", { alpha: false });
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.9));
+      if (blob?.type !== "image/jpeg") throw new Error("Could not encode photo.");
+      return blob;
+    } finally {
+      bitmap.close();
+      canvas.width = canvas.height = 0;
+    }
+  }
+
+  function renderDraftAlbum() {
+    draftPhotoList.replaceChildren();
+    const outing = draft;
+    for (const photo of outing?.album ?? []) {
+      const row = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = photo.preview;
+      link.download = photo.name;
+      const image = document.createElement("img");
+      image.src = photo.preview;
+      image.alt = "";
+      link.append(image, document.createTextNode(photo.name));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "outline";
+      remove.textContent = "Remove";
+      remove.setAttribute("aria-label", `Remove photo ${photo.name}`);
+      remove.addEventListener("click", () => {
+        if (draft !== outing || publishing) return;
+        outing.album = outing.album.filter(item => item !== photo);
+        URL.revokeObjectURL(photo.preview);
+        draftPhotoStatus.textContent = "";
+        renderDraftAlbum();
+      });
+      row.append(link, remove);
+      draftPhotoList.append(row);
+    }
+  }
+
+  async function addDraftPhotos(files) {
+    if (!draft || preparingPhotos || publishing || !files.length) return;
+    const outing = draft;
+    outing.album ??= [];
+    preparingPhotos = true;
+    syncCaptureControls();
+    draftPhotoStatus.textContent = "Preparing photos…";
+    let added = 0;
+    let failed = 0;
+    try {
+      for (const file of files) {
+        if (draft !== outing) return;
+        try {
+          const blob = await sanitizePhoto(file);
+          if (draft !== outing) return;
+          const name = crypto.randomUUID().toUpperCase() + ".jpg";
+          outing.album.push({ name, blob, preview: URL.createObjectURL(blob) });
+          added++;
+          renderDraftAlbum();
+        } catch {
+          failed++;
+        }
+      }
+    } finally {
+      if (draft === outing) {
+        preparingPhotos = false;
+        draftPhotoStatus.textContent = failed
+          ? `Added ${added} of ${files.length} photos. Try JPEG or PNG for photos this browser could not open.`
+          : "";
+        syncCaptureControls();
+      }
+    }
+  }
+
+  photoPicker.addEventListener("click", () => draftPhotoFiles.click());
+  draftPhotoFiles.addEventListener("change", () => {
+    const files = [...draftPhotoFiles.files];
+    draftPhotoFiles.value = "";
+    return addDraftPhotos(files);
+  });
+  photoPicker.addEventListener("dragover", event => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = photoPicker.disabled ? "none" : "copy";
+    if (!photoPicker.disabled) photoPicker.classList.add("is-dragging");
+  });
+  photoPicker.addEventListener("dragleave", () => photoPicker.classList.remove("is-dragging"));
+  photoPicker.addEventListener("drop", event => {
+    event.preventDefault();
+    photoPicker.classList.remove("is-dragging");
+    return addDraftPhotos([...event.dataTransfer.files]);
+  });
+
   function selectDraftCategory(value) {
     if (!draft || publishing) return;
     const entry = getCategory(categoryKey(value) === categoryKey(uncategorized) ? uncategorized : value);
@@ -2085,7 +2201,7 @@ function init() {
     if (draft && !publishing) closeDraft("Outing discarded");
   });
   draftExport.addEventListener("click", () => {
-    if (!draft || matchingRecording || publishing) return;
+    if (!draft || matchingRecording || preparingPhotos || publishing) return;
     downloadOutings([draft], `streetlog-${draft.kind}-${draft.id}.geojson`);
     closeDraft("GeoJSON export started");
   });
@@ -2128,7 +2244,7 @@ function init() {
           outingKind: outing.kind ?? "recording",
           category: categoryName(outing.category),
           description: outing.description ?? "",
-          photoFileNames: outing.photoFileNames ?? [],
+          photoFileNames: outing.album?.map(photo => photo.name) ?? outing.photoFileNames ?? [],
           streetSnapped: singlePoint ? outing.kind === "pin" && outing.snapped === true : statuses.every(Boolean),
           ...(outing.recordedCoordinates ? { recordedCoordinates: outing.recordedCoordinates } : {}),
           ...(matched ? { streetSnappedParts: statuses } : {}),

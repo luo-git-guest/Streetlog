@@ -74,7 +74,7 @@ window.streetlogGitHub = (() => {
         canPush: Boolean(account && permissions.push), isPrivate: info.private };
     }
 
-    async function upload(target, filename, data) {
+    async function upload(target, filename, data, photos = []) {
       const { repo, endpoint, branch, path, account, canPush } = target;
       const head = branch.split("/");
       const ref = await request([...endpoint, "git", "ref", "heads", ...head]);
@@ -91,9 +91,19 @@ window.streetlogGitHub = (() => {
         return { url: pr.html_url, pullRequest: true };
       };
       const makeCommit = async destination => {
+        const treeEntries = [{ path: path + "/" + filename, mode: "100644", type: "blob", content: data }];
+        for (const photo of photos) {
+          const content = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(",")[1]);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(photo.blob);
+          });
+          const { sha } = await request([...destination, "git", "blobs"], "POST", { content, encoding: "base64" });
+          treeEntries.push({ path: path + "/" + photo.name, mode: "100644", type: "blob", sha });
+        }
         const tree = await request([...destination, "git", "trees"], "POST", {
-          base_tree: parent.tree.sha,
-          tree: [{ path: path + "/" + filename, mode: "100644", type: "blob", content: data }]
+          base_tree: parent.tree.sha, tree: treeEntries
         });
         return request([...destination, "git", "commits"], "POST", {
           message: "Upload outing from Streetlog", tree: tree.sha, parents: [parent.sha]

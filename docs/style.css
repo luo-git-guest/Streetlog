@@ -127,3 +127,14 @@ progress:not([hidden]){display:block;width:100%;margin-top:8px;accent-color:var(
 .category-create-row{display:flex;align-items:center;gap:6px}
 .category-create-row input{flex:1;min-width:0;border:1px solid var(--line);border-radius:6px;padding:6px;font:inherit}
 #draft-category-status:not(:empty){margin-bottom:8px;font-size:.8rem}
+
+.draft-album{margin-bottom:12px}
+.draft-album h2{margin-bottom:6px}
+#draft-photo-picker{width:100%;border-style:dashed}
+#draft-photo-picker.is-dragging{background:#e9f3ec;border-color:var(--green)}
+#draft-photo-status:not(:empty){margin-top:6px;font-size:.8rem}
+.draft-photo-list{list-style:none;margin:0;padding:0}
+.draft-photo-list li{display:flex;align-items:center;gap:8px;margin-top:8px}
+.draft-photo-list a{display:flex;align-items:center;gap:6px;flex:1;min-width:0;font-size:.8rem;overflow-wrap:anywhere}
+.draft-photo-list img{width:40px;height:40px;border-radius:6px;object-fit:cover;flex:none}
+.draft-photo-list button{padding-inline:6px;font-size:.75rem}
