@@ -1349,9 +1349,64 @@ function init() {
     }
   });
 
+  async function loadPublishedRoutes() {
+    const publishedStatus = byId("published-status");
+    const base = new URL(".", document.baseURI);
+    let folder;
+    let files;
+    try {
+      const config = await fetch(new URL("site.json", base), { cache: "no-cache" });
+      if (config.status === 404) return;
+      if (!config.ok) throw new Error("Site configuration unavailable.");
+      const { GeoJSON_folder: path } = await config.json();
+      if (typeof path !== "string" || !path.trim()) throw new Error("Set GeoJSON_folder in site.json.");
+      folder = new URL(path.trim().replace(/\/?$/, "/"), base);
+      if (folder.origin !== base.origin || !folder.pathname.startsWith(base.pathname) ||
+          folder.search || folder.hash) throw new Error("GeoJSON_folder must be inside the published site.");
+      const response = await fetch(new URL("index.json", folder), { cache: "no-cache" });
+      if (!response.ok) throw new Error("Could not read the GeoJSON folder’s index.json.");
+      ({ files } = await response.json());
+      if (!Array.isArray(files) || !files.every(name =>
+        typeof name === "string" && /^[^/\\]+\.geojson$/i.test(name))) {
+        throw new Error("index.json must list GeoJSON filenames in its files array.");
+      }
+    } catch (error) {
+      publishedStatus.textContent = error.message;
+      return;
+    }
+
+    const bounds = L.latLngBounds([]);
+    let loaded = 0;
+    let failed = 0;
+    for (const name of new Set(files)) {
+      const url = new URL(encodeURIComponent(name), folder);
+      const id = `published:${url.pathname}`;
+      if (importLayers.has(id)) continue;
+      publishedStatus.textContent = `Loading published route · ${name}`;
+      try {
+        const response = await fetch(url, { cache: "no-cache" });
+        if (!response.ok) throw new Error("Route unavailable.");
+        const data = await response.json();
+        const plotted = plotImportedRoute({ id, name, data, snapped: containsSnappedRoute(data) });
+        if (!plotted) throw new Error("No map geometry found.");
+        bounds.extend(plotted);
+        loaded++;
+      } catch {
+        failed++;
+      }
+    }
+    if (loaded) refreshMap();
+    if (bounds.isValid() && !current && checkedRecorded.size + checkedImported.size === 0) {
+      map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
+    }
+    publishedStatus.textContent = loaded ? `Loaded ${loaded} published route files.` : "";
+    if (failed) publishedStatus.textContent += ` Could not load ${failed} published route files.`;
+  }
+
   if (["127.0.0.1", "localhost"].includes(window.location.hostname)) {
-    restoreLibrary().then(reopenRememberedFolder);
+    restoreLibrary().then(loadPublishedRoutes).then(reopenRememberedFolder);
   } else {
+    loadPublishedRoutes();
     reopenRememberedFolder();
   }
 

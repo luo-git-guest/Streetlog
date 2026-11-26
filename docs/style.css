@@ -81,3 +81,5 @@ progress:not([hidden]){display:block;width:100%;margin-top:8px;accent-color:var(
 .outing-choices label{display:flex;align-items:center;gap:6px;min-height:32px;overflow-wrap:anywhere;font-size:.875rem;cursor:pointer}
 .outing-choices input{flex:none;accent-color:var(--green)}
 #outing-status:not(:empty){margin-top:6px;font-size:.875rem}
+
+#published-status:not(:empty){margin-top:8px;font-size:.875rem;overflow-wrap:anywhere}
