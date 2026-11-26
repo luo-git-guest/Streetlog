@@ -361,6 +361,7 @@ function nearestRouteSection(map, point, paths) {
 
 function init() {
   if (!window.L) {
+    byId("github-repository").textContent = "Streetlog could not load its map. Reload the page to retry.";
     status.textContent = "Map failed to load";
     hint.textContent = "Check your connection and reload.";
     record.disabled = dropPin.disabled = locate.disabled = byId("import").disabled = byId("photos").disabled = true;
@@ -1570,6 +1571,22 @@ function init() {
     }
   });
 
+  const siteBase = new URL(".", document.baseURI);
+  const siteConfig = readSiteConfig();
+
+  async function readSiteConfig() {
+    try {
+      const response = await fetch(new URL("site.json", siteBase), { cache: "no-store", signal: AbortSignal.timeout(10000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const config = await response.json();
+      configureGitHub(config.git_url, config.GeoJSON_folder);
+      return config;
+    } catch {
+      byId("github-repository").textContent = "Could not load site.json. Reload the page to retry.";
+      return null;
+    }
+  }
+
   async function loadPublishedRoutes() {
     const publishedStatus = byId("published-status");
     const base = new URL(".", document.baseURI);
@@ -1577,11 +1594,9 @@ function init() {
     let files;
     let availablePhotos;
     try {
-      const config = await fetch(new URL("site.json", base), { cache: "no-cache" });
-      if (config.status === 404) return;
-      if (!config.ok) throw new Error("Site configuration unavailable.");
-      const { GeoJSON_folder: path, categories, git_url: gitURL } = await config.json();
-      configureGitHub(gitURL, path);
+      const config = await siteConfig;
+      if (!config) return;
+      const { GeoJSON_folder: path, categories } = config;
       configureCategories(categories);
       if (typeof path !== "string" || !path.trim()) throw new Error("Set GeoJSON_folder in site.json.");
       folder = new URL(path.trim().replace(/\/?$/, "/"), base);
@@ -1654,7 +1669,11 @@ function init() {
   }
 
   function configureGitHub(url, folder) {
-    githubRepo = window.streetlogGitHub?.repository(url);
+    if (!window.streetlogGitHub) {
+      byId("github-repository").textContent = "GitHub controls could not load. Reload the page to retry.";
+      return;
+    }
+    githubRepo = window.streetlogGitHub.repository(url);
     githubFolder = folder;
     if (!githubRepo) {
       byId("github-repository").textContent = "Set a GitHub repository URL in site.json.";
@@ -1665,7 +1684,7 @@ function init() {
     link.href = "https://github.com/" + repo;
     link.textContent = repo;
     byId("github-repository").replaceChildren(link);
-    githubForm.hidden = false;
+    syncCaptureControls();
   }
 
   githubForm.addEventListener("submit", async event => {
@@ -1748,7 +1767,7 @@ function init() {
     draftCategory.disabled = draftDescription.disabled = publishing;
     pushDraft.disabled = !draft || !githubTarget || matchingRecording || publishing;
     githubUnlink.disabled = publishing;
-    githubLink.disabled = publishing || linking;
+    githubToken.disabled = githubLink.disabled = !githubRepo || publishing || linking;
   }
 
   function showDraft(outing, message) {

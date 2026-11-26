@@ -6,12 +6,12 @@
 <title>Streetlog — Explore your streets</title>
 <meta name="description" content="Record GPS walks and see which streets you've explored.">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=github-link-2">
 <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script defer src="vendor/exifr.js"></script>
 <script defer src="folder-library.js"></script>
-<script defer src="github-publisher.js"></script>
-<script defer src="app.js"></script>
+<script defer src="github-publisher.js?v=github-link-2"></script>
+<script defer src="app.js?v=github-link-2"></script>
 </head>
 <body>
 <header><div class="brand"><span class="mark" aria-hidden="true">⌖</span> Streetlog</div><button id="locate" class="outline" type="button"><span aria-hidden="true">⌖</span> My location</button></header>
@@ -54,12 +54,12 @@ Pin
 </section>
 <details id="github-settings" class="github-settings">
 <summary>GitHub</summary>
-<p id="github-repository"></p>
+<p id="github-repository">Loading repository settings…</p>
 <p id="github-account" role="status">Guest · no account linked</p>
-<form id="github-form" hidden>
+<form id="github-form">
 <label for="github-token">Personal access token</label>
-<input id="github-token" type="password" required autocomplete="off" spellcheck="false">
-<button id="github-link" class="outline" type="submit">Link GitHub account</button>
+<input id="github-token" type="password" disabled required autocomplete="off" spellcheck="false">
+<button id="github-link" class="outline" type="submit" disabled>Link GitHub account</button>
 <p>The token is kept for this page session. <a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens" target="_blank" rel="noopener">GitHub token setup</a></p>
 </form>
 <button id="github-unlink" class="outline" type="button" hidden>Unlink account</button>
