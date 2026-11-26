@@ -5,6 +5,52 @@ import shutil
 from pathlib import Path
 
 
+DEFAULT_CATEGORY_STYLE = {"stroke": "#007985", "stroke-width": "5px", "stroke-opacity": 0.9}
+
+
+def category_names(data):
+    if not isinstance(data, dict):
+        return
+    if data.get("type") == "FeatureCollection":
+        features = data.get("features")
+        if isinstance(features, list):
+            for feature in features:
+                yield from category_names(feature)
+    elif data.get("type") == "Feature":
+        properties = data.get("properties")
+        if isinstance(properties, dict):
+            name = properties.get("category")
+            if isinstance(name, str) and name.strip():
+                yield name.strip()
+
+
+def add_missing_categories(config, folder, files):
+    categories = config.setdefault("categories", [])
+    if not isinstance(categories, list):
+        raise ValueError("site.json categories must be an array.")
+    known = {entry["name"].strip().casefold() for entry in categories
+             if isinstance(entry, dict) and isinstance(entry.get("name"), str)}
+    default = next((entry["style"] for entry in categories
+                    if isinstance(entry, dict) and isinstance(entry.get("name"), str)
+                    and entry["name"].strip().casefold() == "uncategorized"
+                    and isinstance(entry.get("style"), dict)), DEFAULT_CATEGORY_STYLE)
+    added = 0
+    for name in files:
+        try:
+            data = json.loads((folder / name).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            print(f"Skipping category scan for unreadable GeoJSON: {name!r}")
+            continue
+        for category in category_names(data):
+            key = category.casefold()
+            if key in known:
+                continue
+            known.add(key)
+            categories.append({"name": category, "style": dict(default)})
+            added += 1
+    print(f"Added {added} categories to the published site.json.")
+
+
 def build_pages(repository: Path, output: Path) -> None:
     published_source = repository / "docs"
     config_file = repository / "site.json"
@@ -20,7 +66,6 @@ def build_pages(repository: Path, output: Path) -> None:
         raise ValueError("GitHub Pages does not publish symbolic links.")
 
     shutil.copytree(published_source, output)
-    shutil.copyfile(config_file, output / "site.json")
     folder = output / relative_folder
     folder.mkdir(parents=True, exist_ok=True)
     names = sorted((file.name for file in folder.iterdir() if file.is_file()),
@@ -28,6 +73,8 @@ def build_pages(repository: Path, output: Path) -> None:
     files = [name for name in names if Path(name).suffix.lower() == ".geojson"]
     image_types = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}
     photos = [name for name in names if Path(name).suffix.lower() in image_types]
+    add_missing_categories(config, folder, files)
+    (output / "site.json").write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     manifest = json.dumps({"files": files, "photos": photos}, ensure_ascii=False, indent=2) + "\n"
     (folder / "index.json").write_text(manifest, encoding="utf-8")
     print(f"Indexed {len(files)} GeoJSON files and {len(photos)} photos in docs/{relative_folder}/.")
