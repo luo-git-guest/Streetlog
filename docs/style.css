@@ -2,12 +2,10 @@
 *{box-sizing:border-box}
 body{margin:0;background:var(--paper);color:var(--ink)}
 header{height:72px;display:flex;align-items:center;justify-content:space-between;padding:0 clamp(16px,4vw,56px);background:white;border-bottom:1px solid var(--line)}
-.brand{display:flex;align-items:center;gap:10px;font-size:22px;font-weight:750;letter-spacing:-.045em}
+.brand{margin:0;display:flex;align-items:center;gap:10px;font-size:22px;font-weight:750;letter-spacing:-.045em}
 .mark{display:grid;place-items:center;background:var(--green);color:white;width:37px;height:37px;border-radius:11px;font-size:24px}
 main{display:grid;grid-template-columns:minmax(280px,350px) minmax(0,1fr);min-height:calc(100dvh - 72px)}
 aside{padding:clamp(24px,4vw,48px) clamp(18px,3vw,36px);display:flex;flex-direction:column;gap:23px;border-right:1px solid var(--line)}
-h1{font-size:clamp(40px,4vw,58px);line-height:.98;letter-spacing:-.075em;margin:0 0 17px}
-h1 span{color:#287a55}
 p{margin:0;color:var(--muted)}
 .record{padding:16px;background:white;border:1px solid var(--line);border-radius:16px}
 .state{display:flex;align-items:center;gap:8px;font-size:.875rem;font-weight:680;margin-bottom:12px}
@@ -30,7 +28,7 @@ h2{font-size:1rem;margin:0 0 12px}
 .stats strong,.stats span{display:block}.stats strong{font-size:1.56rem;letter-spacing:-.05em}.stats span{font-size:.875rem;color:var(--muted)}
 .map-panel{position:relative;min-height:450px;background:#e4ece7}
 #map{position:absolute;inset:0}
-@media(max-width:700px){header{height:60px}main{display:flex;flex-direction:column}.map-panel{order:-1;min-height:52dvh}aside{padding:23px;border-right:0;gap:16px}h1 br{display:none}h1{font-size:38px;margin-bottom:8px}}
+@media(max-width:700px){header{height:60px}main{display:flex;flex-direction:column}.map-panel{order:-1;min-height:52dvh}aside{padding:23px;border-right:0;gap:16px}}
 
 .file-actions{display:flex;flex-wrap:wrap;gap:8px}
 #import-status:not(:empty){margin-top:8px;font-size:.875rem}

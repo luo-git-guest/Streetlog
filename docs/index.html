@@ -3,21 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Streetlog — Explore your streets</title>
+<title>Streetlog</title>
 <meta name="description" content="Record GPS walks and see which streets you've explored.">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-<link rel="stylesheet" href="style.css?v=outing-album-1">
+<link rel="stylesheet" href="style.css?v=site-name-1">
 <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script defer src="vendor/exifr.js"></script>
 <script defer src="folder-library.js"></script>
 <script defer src="github-publisher.js?v=outing-album-1"></script>
-<script defer src="app.js?v=outing-album-1"></script>
+<script defer src="app.js?v=site-name-1"></script>
 </head>
 <body>
-<header><div class="brand"><span class="mark" aria-hidden="true">⌖</span> Streetlog</div><button id="locate" class="outline" type="button"><span aria-hidden="true">⌖</span> My location</button></header>
+<header><h1 class="brand"><span class="mark" aria-hidden="true">⌖</span><span id="site-name">Streetlog</span></h1><button id="locate" class="outline" type="button"><span aria-hidden="true">⌖</span> My location</button></header>
 <main>
 <aside>
-<section class="intro"><h1>Explore your<br>streets<span>.</span></h1><p>Record where you go and spot the streets you still have to explore.</p></section>
 <section class="record">
 <div class="state"><span id="dot"></span><span id="status" role="status">Ready to record</span></div>
 <div class="record-actions">

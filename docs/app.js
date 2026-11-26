@@ -1601,6 +1601,11 @@ function init() {
       const response = await fetch(new URL("site.json", siteBase), { cache: "no-store", signal: AbortSignal.timeout(10000) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const config = await response.json();
+      if (typeof config.site_name === "string" && config.site_name.trim()) {
+        const name = config.site_name.trim();
+        byId("site-name").textContent = name;
+        document.title = name;
+      }
       configureGitHub(config.git_url, config.GeoJSON_folder);
       return config;
     } catch {
