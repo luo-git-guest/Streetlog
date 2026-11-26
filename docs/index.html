@@ -24,7 +24,7 @@
 <label class="snap-option"><input id="snap-streets" type="checkbox" checked aria-describedby="snap-recording-note"> Snap to streets</label>
 <p id="snap-recording-note">Matches recordings and imported routes to walking paths using <a href="https://routing.openstreetmap.de/about.html">FOSSGIS</a>. When enabled, route coordinates are sent to that service.</p>
 </section>
-<section class="history" aria-labelledby="history-label">
+<section class="history" aria-labelledby="history-label" hidden>
 <h2 id="history-label">Your exploration</h2>
 <div class="stats"><div><strong id="distance">0.00</strong><span>Kilometers logged</span></div><div><strong id="outings">0</strong><span>Recorded outings</span></div><div><strong id="imported-outings">0</strong><span>Imported outings</span></div></div>
 <details id="outing-picker" hidden>
@@ -57,7 +57,7 @@
 <small>Photo by <a href="https://commons.wikimedia.org/wiki/File:Daan_Park_061021.JPG">ResTpeTw</a> · <a href="https://creativecommons.org/licenses/by/2.5/">CC BY 2.5</a> · test geotag added</small>
 </div>
 </section>
-<section class="storage" aria-label="Library storage">
+<section class="storage" aria-label="Library storage" hidden>
 <div class="file-actions">
 <button id="open-folder" class="outline" type="button">Open library folder</button>
 <button id="reopen-folder" class="outline" type="button" hidden>Reconnect folder</button>
