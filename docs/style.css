@@ -17,7 +17,8 @@ button{font:inherit;font-size:.9rem;font-weight:680;min-height:44px;border-radiu
 button:focus-visible{outline:3px solid #006b85;outline-offset:3px}
 #record{width:100%;background:var(--green);color:white;border:1px solid var(--green)}
 #record:hover{background:#104e38}
-#record span{margin-right:5px}
+#record .stop-icon,#record.is-recording .record-icon{display:none}
+#record.is-recording .stop-icon{display:block}
 .outline{background:white;border:1px solid var(--line);color:var(--ink)}
 .outline:hover:not(:disabled){background:#e9f3ec}
 button:disabled{opacity:.5;cursor:default}
@@ -105,9 +106,10 @@ progress:not([hidden]){display:block;width:100%;margin-top:8px;accent-color:var(
 .draft-actions{display:flex;flex-wrap:wrap;gap:8px}
 .record-actions{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:6px}
 .record-actions button{padding-inline:5px;font-size:.8125rem}
-#drop-pin{display:flex;align-items:center;justify-content:center;gap:4px;background:#ffb000;color:#3c2800;border:1px solid #ffb000}
+#record,#drop-pin{display:flex;align-items:center;justify-content:center;gap:4px}
+#drop-pin{background:#ffb000;color:#3c2800;border:1px solid #ffb000}
 #drop-pin:hover:not(:disabled){background:#f0a400}
-#drop-pin svg{flex:none}
+.record-actions svg{flex:none}
 #outing-draft{min-width:0;margin:14px 0 0;padding:10px;border:1px solid var(--line);border-radius:9px}
 #outing-draft legend{font-weight:680;padding:0 4px}
 #outing-draft label{display:block;font-size:.875rem;margin-bottom:4px}

@@ -21,10 +21,19 @@
 <section class="record">
 <div class="state"><span id="dot"></span><span id="status" role="status">Ready to record</span></div>
 <div class="record-actions">
-<button id="record" type="button"><span aria-hidden="true">●</span> Start recording</button>
+<button id="record" type="button">
+<svg class="record-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+<circle cx="12" cy="12" r="4" fill="currentColor"/>
+</svg>
+<svg class="stop-icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+<rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor"/>
+</svg>
+<span id="record-label">Record</span>
+</button>
 <button id="drop-pin" type="button">
 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="12" cy="7" r="4" fill="currentColor"/><path d="M12 11v10"/></svg>
-Drop pin
+Pin
 </button>
 </div>
 <p id="hint">Allow location access and keep this page open while you explore.</p>

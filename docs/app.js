@@ -1837,7 +1837,8 @@ function init() {
     const outing = current;
     current = null;
     byId("dot").classList.remove("active");
-    record.innerHTML = '<span aria-hidden="true">●</span> Start recording';
+    record.classList.remove("is-recording");
+    byId("record-label").textContent = "Record";
     if (!outing.segments.length) {
       closeDraft(message);
       return;
@@ -1894,7 +1895,8 @@ function init() {
     breakTrail = false;
     syncCaptureControls();
     byId("dot").classList.add("active");
-    record.innerHTML = '<span aria-hidden="true">■</span> Stop recording';
+    record.classList.add("is-recording");
+    byId("record-label").textContent = "Stop";
     status.textContent = "Waiting for GPS";
     hint.textContent = "Keep this page open and your phone awake for continuous tracking.";
     watch = navigator.geolocation.watchPosition(position => {
