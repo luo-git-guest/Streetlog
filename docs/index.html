@@ -19,10 +19,25 @@
 <section class="intro"><h1>Explore your<br>streets<span>.</span></h1><p>Record where you go and spot the streets you still have to explore.</p></section>
 <section class="record">
 <div class="state"><span id="dot"></span><span id="status" role="status">Ready to record</span></div>
+<div class="record-actions">
 <button id="record" type="button"><span aria-hidden="true">●</span> Start recording</button>
+<button id="drop-pin" class="outline" type="button">Drop pin</button>
+</div>
 <p id="hint">Allow location access and keep this page open while you explore.</p>
 <label class="snap-option"><input id="snap-streets" type="checkbox" checked aria-describedby="snap-recording-note"> Snap to streets</label>
-<p id="snap-recording-note">Matches recordings and imported routes to walking paths using <a href="https://routing.openstreetmap.de/about.html">FOSSGIS</a>. When enabled, route coordinates are sent to that service.</p>
+<p id="snap-recording-note">Matches recordings and pins to walking paths using <a href="https://routing.openstreetmap.de/about.html">FOSSGIS</a>. When enabled, route coordinates are sent to that service.</p>
+<fieldset id="outing-draft" hidden>
+<legend>Unsaved outing</legend>
+<label for="draft-category">Category</label>
+<select id="draft-category"><option>Uncategorized</option></select>
+<label for="draft-description">Description</label>
+<textarea id="draft-description" rows="3"></textarea>
+<div class="draft-actions">
+<button id="discard-draft" class="outline" type="button">Discard</button>
+<button id="export-draft" class="outline" type="button">Export GeoJSON</button>
+<button class="outline" type="button" disabled title="GitHub upload is not configured">Push to GitHub</button>
+</div>
+</fieldset>
 </section>
 <section class="history" aria-labelledby="history-label" hidden>
 <h2 id="history-label">Your exploration</h2>

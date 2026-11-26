@@ -104,3 +104,11 @@ progress:not([hidden]){display:block;width:100%;margin-top:8px;accent-color:var(
 .layer-style button{min-height:30px;justify-self:start;padding:2px 7px;font-size:.8rem}
 #layer-status:not(:empty){margin-top:5px;font-size:.8rem}
 @media(max-width:700px){.layer-list{max-height:31dvh}}
+
+.record-actions,.draft-actions{display:flex;flex-wrap:wrap;gap:8px}
+.record-actions #record{flex:1 0 auto;width:auto}
+#outing-draft{min-width:0;margin:14px 0 0;padding:10px;border:1px solid var(--line);border-radius:9px}
+#outing-draft legend{font-weight:680;padding:0 4px}
+#outing-draft label{display:block;font-size:.875rem;margin-bottom:4px}
+#outing-draft select,#outing-draft textarea{width:100%;font:inherit;color:inherit;border:1px solid var(--line);border-radius:6px;background:white;padding:6px;margin-bottom:10px}
+#outing-draft textarea{resize:vertical}

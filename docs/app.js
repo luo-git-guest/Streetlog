@@ -2,6 +2,7 @@
 
 const byId = id => document.getElementById(id);
 const record = byId("record");
+const dropPin = byId("drop-pin");
 const locate = byId("locate");
 const exportButton = byId("export");
 const status = byId("status");
@@ -13,6 +14,17 @@ const defaultHint = hint.textContent;
 
 const matchBatchSize = 10;
 let nextMatchRequest = 0;
+const routingURL = "https://routing.openstreetmap.de/routed-foot/";
+
+async function requestRouting(path) {
+  const now = Date.now();
+  const requestAt = Math.max(now, nextMatchRequest);
+  nextMatchRequest = requestAt + 1000;
+  if (requestAt > now) await new Promise(resolve => setTimeout(resolve, requestAt - now));
+  const response = await fetch(routingURL + path, { signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error("Routing service unavailable");
+  return response.json();
+}
 
 // Keep the straight-line approximation within five meters and limit point
 // spacing so the matcher still gets observations near nearby streets.
@@ -135,17 +147,9 @@ async function matchStreetGeometry(data, cache, onProgress) {
           continue;
         }
         const radiuses = points.map(() => 20).join(";");
-        const now = Date.now();
-        const requestAt = Math.max(now, nextMatchRequest);
-        nextMatchRequest = requestAt + 1000;
-        if (requestAt > now) await new Promise(resolve => setTimeout(resolve, requestAt - now));
-        const response = await fetch(
-          "https://routing.openstreetmap.de/routed-foot/match/v1/driving/" + positions +
-          "?geometries=geojson&overview=full&radiuses=" + radiuses,
-          { signal: AbortSignal.timeout(15000) }
+        const result = await requestRouting(
+          "match/v1/driving/" + positions + "?geometries=geojson&overview=full&radiuses=" + radiuses
         );
-        if (!response.ok) throw new Error("Routing service unavailable");
-        const result = await response.json();
         if (result.code !== "Ok" || result.matchings.length !== 1 ||
             result.tracepoints.length !== points.length || result.tracepoints.some(point => !point)) {
           throw new Error("Incomplete street match");
@@ -359,7 +363,7 @@ function init() {
   if (!window.L) {
     status.textContent = "Map failed to load";
     hint.textContent = "Check your connection and reload.";
-    record.disabled = locate.disabled = byId("import").disabled = byId("photos").disabled = true;
+    record.disabled = dropPin.disabled = locate.disabled = byId("import").disabled = byId("photos").disabled = true;
     return;
   }
 
@@ -376,6 +380,11 @@ function init() {
   const categoryConfig = new Map();
   const layerPreferenceKey = "streetlog.category-layers";
   const layerList = byId("category-layers");
+  const draftFields = byId("outing-draft");
+  const draftCategory = byId("draft-category");
+  const draftDescription = byId("draft-description");
+  const draftExport = byId("export-draft");
+  const gpsAvailable = Boolean(navigator.geolocation && window.isSecureContext);
   let overrides = new Map();
   try {
     const saved = JSON.parse(localStorage.getItem(layerPreferenceKey) || "[]");
@@ -418,7 +427,7 @@ function init() {
     if (layer.eachLayer) {
       layer.eachLayer(child => paintLayer(child, style));
     } else if (layer.setRadius) {
-      layer.setRadius(style.weight / 2);
+      layer.setRadius(Math.max(style.weight / 2, layer.options?.minRadius ?? 0));
       layer.setStyle({ stroke: false, fillColor: style.color, fillOpacity: style.opacity });
     } else {
       layer.setStyle?.({ color: style.color, weight: style.weight, opacity: style.opacity,
@@ -477,6 +486,11 @@ function init() {
   function renderLayerControls() {
     layerList.replaceChildren();
     const entries = [...categoryLayers.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const selectedCategory = draftCategory.value || uncategorized;
+    draftCategory.replaceChildren(new Option(uncategorized),
+      ...entries.filter(entry => entry.key !== categoryKey(uncategorized)).map(entry => new Option(entry.name)));
+    draftCategory.value = [...draftCategory.options].find(option =>
+      categoryKey(option.value) === categoryKey(selectedCategory))?.value ?? uncategorized;
     for (const entry of entries) {
       const style = styleFor(entry);
       const row = document.createElement("div");
@@ -774,20 +788,14 @@ function init() {
     if (!file) return;
     fileInput.value = "";
     importButton.disabled = true;
-    const shouldSnap = snapStreets.checked;
     importProgress.removeAttribute("value");
     importProgress.hidden = false;
     importStatus.textContent = `Reading ${file.name}…`;
     try {
       const data = JSON.parse(await file.text());
       if (!data || typeof data.type !== "string") throw new Error("Missing GeoJSON type");
-      const result = shouldSnap ? await matchStreetGeometry(data, undefined, (done, total) => {
-        importProgress.max = total;
-        importProgress.value = done;
-        importStatus.textContent = `Matching streets · ${file.name} · ${done} of ${total} sections processed`;
-      }) : { data };
       const bounds = plotImportedRoute({
-        id: crypto.randomUUID(), name: file.name, data: result.data, sourceData: result.matched ? data : undefined, snapped: containsSnappedRoute(result.data)
+        id: crypto.randomUUID(), name: file.name, data, snapped: containsSnappedRoute(data)
       });
       if (!bounds) {
         importStatus.textContent = "This file has no map features to display.";
@@ -796,10 +804,7 @@ function init() {
       showPhotoSections();
       renderOutingPicker();
       if (bounds.isValid()) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
-      let message = `Plotted ${file.name}.`;
-      if (result.matched) message += " Street matching applied.";
-      if (result.unmatched) message += " Unmatched sections use the original coordinates.";
-      importStatus.textContent = message;
+      importStatus.textContent = `Plotted ${file.name}.`;
     } catch {
       importStatus.textContent = "Could not read this file. Choose valid GeoJSON.";
     } finally {
@@ -814,7 +819,8 @@ function init() {
   let marker = null;
   let watch = null;
   let breakTrail = false;
-  let lastFolderCheckpoint = 0;
+  let draft = null;
+  let locatingPin = false;
   let routeLayer;
   let matchingRecording = false;
   let liveMatch = null;
@@ -1006,11 +1012,12 @@ function init() {
     if (routeLayer) routeLayer.eachLayer(unregisterLayer);
     routeLayer = L.featureGroup();
     let meters = 0;
-    for (const outing of outings) {
+    for (const outing of [...outings, ...(current || draft ? [current || draft] : [])]) {
       if (outing.snapped || (outing.matchedSegments && outing.snapped !== false)) showRoutingAttribution();
       for (const [segmentIndex, segment] of outing.segments.entries()) {
         if (segment.length === 1) {
-          const dot = L.circleMarker(pointCoords(segment[0]), { interactive: false });
+          const prominent = outing.kind === "pin" && categoryKey(outing.category) === categoryKey(uncategorized);
+          const dot = L.circleMarker(pointCoords(segment[0]), { interactive: false, minRadius: prominent ? 6 : 0 });
           routeLayer.addLayer(registerLayer(dot, outing.category));
         } else {
           for (const path of displayedPaths(outing, segment, segmentIndex)) {
@@ -1035,7 +1042,6 @@ function init() {
     outings = loadOutings();
   } catch {
     status.textContent = "Browser storage unavailable";
-    record.disabled = true;
   }
   refreshMap();
   if (visibleMapBounds().isValid()) {
@@ -1069,7 +1075,7 @@ function init() {
       }
       refreshMap();
       const bounds = visibleMapBounds();
-      if (bounds.isValid() && !current) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
+      if (bounds.isValid() && !current && !draft) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
       saveLibrary.hidden = false;
       saveLibrary.disabled = false;
       libraryStatus.textContent = library.outings.length || library.imports.length || library.photos.length
@@ -1240,42 +1246,28 @@ function init() {
 
   async function loadFolder(files, handle = null) {
     let skipped = 0;
-    let unmatched = 0;
     let done = 0;
     const total = files.routes.length + files.photos.length;
-    const shouldSnap = snapStreets.checked;
     folderProgress.max = Math.max(1, total);
     folderProgress.value = 0;
     for (const entry of files.routes) {
       const fileLabel = `File ${done + 1} of ${total} · ${entry.name}`;
       folderStatus.textContent = `Reading route · ${fileLabel}`;
-      const progress = (matched, batches) => {
-        folderProgress.value = done + matched / batches;
-        folderStatus.textContent = `Matching streets · ${fileLabel} · ${matched} of ${batches} sections processed`;
-      };
       try {
         const data = JSON.parse(await (await entry.getFile()).text());
         const saved = data.streetlogOuting;
         if (saved && typeof saved.id === "string" && Array.isArray(saved.segments) &&
             saved.segments.length && saved.segments.every(segment => Array.isArray(segment) && segment.length &&
               segment.every(point => Number.isFinite(point?.lat) && Number.isFinite(point?.lng)))) {
-          if (shouldSnap) {
-            const result = await matchStreetGeometry(outingGeometry(saved, true), undefined, progress);
-            unmatched += result.unmatched;
-            if (result.matched) applyStreetMatch(saved, result.data);
-          }
           mergeOuting(saved);
           rememberFolderOuting(saved.id, handle, entry.name);
         } else {
           const id = data.streetlogImport?.id || `folder-route:${entry.name}`;
           if (importedRoutes.some(route => route.id === id)) continue;
-          const result = shouldSnap
-            ? await matchStreetGeometry(data, undefined, progress) : { data, unmatched: 0 };
-          unmatched += result.unmatched;
-          if (!plotImportedRoute({ id, name: entry.name, data: result.data,
-            sourceData: data.streetlogImport?.sourceData ?? (result.matched ? data : undefined),
-            snapped: containsSnappedRoute(result.data) })) skipped++;
-          else if (handle) folderImportFiles.set(id, { handle, name: entry.name, updated: Boolean(result.matched) });
+          if (!plotImportedRoute({ id, name: entry.name, data,
+            sourceData: data.streetlogImport?.sourceData,
+            snapped: containsSnappedRoute(data) })) skipped++;
+          else if (handle) folderImportFiles.set(id, { handle, name: entry.name, updated: false });
         }
       } catch {
         skipped++;
@@ -1301,9 +1293,8 @@ function init() {
     }
     refreshMap();
     const bounds = visibleMapBounds();
-    if (bounds.isValid() && !current) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
+    if (bounds.isValid() && !current && !draft) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
     let summary = skipped ? ` Skipped ${skipped} unreadable files.` : "";
-    if (unmatched) summary += " Unmatched sections use their original coordinates.";
     return summary;
   }
 
@@ -1636,7 +1627,7 @@ function init() {
       }
     }
     refreshMap();
-    if (bounds.isValid() && !current && checkedRecorded.size + checkedImported.size === 0) {
+    if (bounds.isValid() && !current && !draft && checkedRecorded.size + checkedImported.size === 0) {
       map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
     }
     publishedStatus.textContent = loaded ? `Loaded ${loaded} published route files.` : "";
@@ -1661,103 +1652,108 @@ function init() {
     if (center) map.setView(pointCoords(point), Math.max(map.getZoom(), 17));
   }
 
-  function stop(message = "Ready to record") {
-    if (watch !== null) navigator.geolocation.clearWatch(watch);
-    watch = null;
-    current = null;
-    byId("dot").classList.remove("active");
-    record.innerHTML = '<span aria-hidden="true">●</span> Start recording';
+  function syncCaptureControls() {
+    record.disabled = !gpsAvailable || locatingPin || Boolean(draft);
+    dropPin.disabled = !gpsAvailable || locatingPin || Boolean(current || draft);
+    snapStreets.disabled = Boolean(current || draft) || locatingPin;
+    draftFields.hidden = !draft;
+    draftExport.disabled = matchingRecording;
+  }
+
+  function showDraft(outing, message) {
+    draft = outing;
+    draftCategory.value = categoryName(outing.category);
+    draftDescription.value = outing.description ?? "";
+    status.textContent = message;
+    hint.textContent = "Export or discard this outing before starting another.";
+    syncCaptureControls();
+    refreshMap();
+  }
+
+  function closeDraft(message) {
+    draft = null;
+    liveMatch = null;
+    matchingRecording = false;
     status.textContent = message;
     hint.textContent = defaultHint;
+    syncCaptureControls();
+    refreshMap();
   }
 
   async function updateLiveMatch(preview) {
-    if (!preview || preview.busy || current !== preview.outing) return;
-    preview.busy = true;
-    try {
-      for (const [index, segment] of preview.outing.segments.entries()) {
-        const state = preview.segments.get(index) ?? { offset: 0, paths: [] };
-        while (segment.length - state.offset >= matchBatchSize && current === preview.outing) {
-          const coordinates = segment.slice(state.offset).map(({ lat, lng }) => [lng, lat]);
-          const anchors = matchAnchorIndices(coordinates, false, matchBatchSize);
-          if (anchors.length < matchBatchSize) break;
-          const end = anchors.at(-1);
-          const result = await matchStreetGeometry({
-            type: "LineString", coordinates: coordinates.slice(0, end + 1)
-          }, preview.cache);
-          if (current !== preview.outing) return;
-          state.paths.push(...result.data.coordinates);
-          state.offset += end;
-          preview.segments.set(index, state);
-          if (result.matched) showRoutingAttribution();
-          refreshMap();
-        }
+    for (const [index, segment] of preview.outing.segments.entries()) {
+      const state = preview.segments.get(index) ?? { offset: 0, paths: [], statuses: [] };
+      while (segment.length - state.offset >= matchBatchSize && current === preview.outing) {
+        const coordinates = segment.slice(state.offset).map(({ lat, lng }) => [lng, lat]);
+        const anchors = matchAnchorIndices(coordinates, false, matchBatchSize);
+        if (anchors.length < matchBatchSize) break;
+        const end = anchors.at(-1);
+        const result = await matchStreetGeometry({
+          type: "LineString", coordinates: coordinates.slice(0, end + 1)
+        });
+        if (liveMatch !== preview) return;
+        state.paths.push(...result.data.coordinates);
+        state.statuses.push(...result.data.streetSnappedParts);
+        state.offset += end;
+        preview.segments.set(index, state);
+        if (result.matched) showRoutingAttribution();
+        refreshMap();
       }
-    } finally {
-      preview.busy = false;
     }
   }
 
-  function outingGeometry(outing, useSaved = false) {
-    return {
-      type: "GeometryCollection",
-      geometries: outing.segments.map((segment, index) => {
-        if (segment.length < 2) return null;
-        const statuses = useSaved ? outing.matchStatuses?.[index] : null;
-        const matched = statuses && outing.matchedSegments?.[index];
-        const streetSnapped = Boolean(statuses?.length && statuses.every(Boolean));
-        if (matched) {
-          return { type: "MultiLineString", coordinates: matched, streetSnapped, streetSnappedParts: statuses };
-        }
-        return { type: "LineString", coordinates: segment.map(({ lat, lng }) => [lng, lat]), streetSnapped };
-      })
-    };
-  }
-
-  function applyStreetMatch(outing, geometry) {
-    outing.matchedSegments = geometry.geometries.map(section =>
-      section?.type === "MultiLineString" ? section.coordinates :
-        section?.streetSnapped ? [section.coordinates] : null);
-    outing.matchStatuses = geometry.geometries.map(section =>
-      section?.streetSnappedParts ?? (section?.streetSnapped ? [true] : null));
-    outing.snapped = containsSnappedRoute(geometry);
-  }
-
   async function finishRecording(outing, preview) {
-    if (!preview || !outing.segments.some(segment => segment.length > 1)) return;
-    matchingRecording = true;
-    record.disabled = true;
-    status.textContent = "Matching recording to walking routes…";
     try {
-      await preview?.pending;
-      const result = await matchStreetGeometry(outingGeometry(outing), preview.cache);
-      if (!result.matched) {
-        status.textContent = "Street match unavailable. Original GPS trail saved.";
-        return;
+      await preview.pending;
+      if (draft !== outing) return;
+      const sections = [];
+      for (const [index, segment] of outing.segments.entries()) {
+        if (segment.length < 2) {
+          sections.push(null);
+          continue;
+        }
+        const state = preview.segments.get(index) ?? { offset: 0, paths: [], statuses: [] };
+        const coordinates = segment.slice(state.offset).map(({ lat, lng }) => [lng, lat]);
+        if (coordinates.length > 1) {
+          const { data } = await matchStreetGeometry({ type: "LineString", coordinates });
+          if (draft !== outing) return;
+          state.paths.push(...data.coordinates);
+          state.statuses.push(...data.streetSnappedParts);
+        }
+        sections.push(state.statuses.some(Boolean) ? state : null);
       }
-      applyStreetMatch(outing, result.data);
-      try {
-        if (activeFolder) await writeFolderOuting(activeFolder, outing);
-        else saveBrowserOuting(outing);
-      } catch {
-        delete outing.matchedSegments;
-        delete outing.matchStatuses;
-        delete outing.snapped;
-        status.textContent = "Could not save the street match. Original GPS trail kept.";
-        return;
-      }
-      refreshMap();
-      status.textContent = result.unmatched
-        ? "Recording snapped. Unmatched sections keep their GPS positions."
-        : "Recording snapped to walking routes.";
+      outing.matchedSegments = sections.map(section => section?.paths ?? null);
+      outing.matchStatuses = sections.map(section => section?.statuses ?? null);
+      outing.snapped = sections.some(Boolean);
+      status.textContent = outing.snapped
+        ? "Unsaved recording · street matching complete"
+        : "Unsaved recording · original GPS trail";
     } catch {
-      status.textContent = "Street match unavailable. Original GPS trail saved.";
+      if (draft === outing) status.textContent = "Unsaved recording · street matching unavailable";
     } finally {
-      liveMatch = null;
-      refreshMap();
-      matchingRecording = false;
-      record.disabled = false;
+      if (draft === outing) {
+        liveMatch = null;
+        matchingRecording = false;
+        syncCaptureControls();
+        refreshMap();
       }
+    }
+  }
+
+  function stopRecording(message = "Ready to record") {
+    if (watch !== null) navigator.geolocation.clearWatch(watch);
+    watch = null;
+    const outing = current;
+    current = null;
+    byId("dot").classList.remove("active");
+    record.innerHTML = '<span aria-hidden="true">●</span> Start recording';
+    if (!outing.segments.length) {
+      closeDraft(message);
+      return;
+    }
+    matchingRecording = Boolean(liveMatch && outing.segments.some(segment => segment.length > 1));
+    showDraft(outing, matchingRecording ? "Unsaved recording · finishing street matching…" : "Unsaved recording");
+    if (matchingRecording) finishRecording(outing, liveMatch);
   }
 
   function geoError(error) {
@@ -1787,47 +1783,25 @@ function init() {
     if (newSegment) current.segments.push([point]);
     else segment.push(point);
 
-    try {
-      if (!activeFolder) saveBrowserOuting(current);
-    } catch {
-      if (newSegment) current.segments.pop();
-      else segment.pop();
-      stop("Storage is full or unavailable");
-      hint.textContent = "Recording stopped. Previously saved points can still be exported.";
-      return;
-    }
-    if (first) outings.push(current);
     breakTrail = false;
     refreshMap();
-    if (activeFolder && (first || point.time - lastFolderCheckpoint >= 15000)) {
-      lastFolderCheckpoint = point.time;
-      writeFolderOuting(activeFolder, current).catch(() => {
-        folderStatus.textContent = "Could not save a recording checkpoint to the folder.";
-      });
+    if (liveMatch && !liveMatch.pending) {
+      const preview = liveMatch;
+      preview.pending = updateLiveMatch(preview).finally(() => { preview.pending = null; });
     }
-    if (liveMatch && !liveMatch.busy) liveMatch.pending = updateLiveMatch(liveMatch);
   }
 
   record.addEventListener("click", () => {
     if (current) {
-      const outing = current;
-      stop();
-      const handle = activeFolder;
-      if (handle && outing.segments.length) {
-        writeFolderOuting(handle, outing).then(() => {
-          folderStatus.textContent = `Recording saved to ${handle.name}.`;
-        }, () => {
-          folderStatus.textContent = "Recording is still on the map. Use Save to folder to retry before leaving.";
-        });
-      }
-      finishRecording(outing, liveMatch);
+      stopRecording();
       return;
     }
-    if (folderBusy || mergingOutings || deletingRecording) return;
-    const outing = { id: crypto.randomUUID(), segments: [] };
+    if (!gpsAvailable || draft || locatingPin) return;
+    const outing = { id: crypto.randomUUID(), kind: "recording", segments: [] };
     current = outing;
-    liveMatch = snapStreets.checked ? { outing, cache: new Map(), segments: new Map(), busy: false } : null;
+    liveMatch = snapStreets.checked ? { outing, segments: new Map(), pending: null } : null;
     breakTrail = false;
+    syncCaptureControls();
     byId("dot").classList.add("active");
     record.innerHTML = '<span aria-hidden="true">■</span> Stop recording';
     status.textContent = "Waiting for GPS";
@@ -1836,12 +1810,80 @@ function init() {
       if (current === outing) addPosition(position);
     }, error => {
       if (current !== outing) return;
-      if (error.code === 1) stop(geoError(error));
+      if (error.code === 1) stopRecording(geoError(error));
       else {
         breakTrail = true;
         status.textContent = geoError(error);
       }
     }, gpsOptions);
+  });
+
+  dropPin.addEventListener("click", () => {
+    if (!gpsAvailable || current || draft || locatingPin) return;
+    locatingPin = true;
+    syncCaptureControls();
+    status.textContent = "Locating pin…";
+    navigator.geolocation.getCurrentPosition(async position => {
+      const { latitude: lat, longitude: lng, accuracy } = position.coords;
+      const point = { lat, lng, accuracy, time: position.timestamp };
+      const outing = { id: crypto.randomUUID(), kind: "pin", segments: [[point]] };
+      locatingPin = false;
+      matchingRecording = snapStreets.checked;
+      showDraft(outing, matchingRecording ? "Unsaved pin · matching to a walking path…" : "Unsaved pin");
+      map.setView(pointCoords(point), Math.max(map.getZoom(), 17));
+      if (!matchingRecording) return;
+      try {
+        const result = await requestRouting(`nearest/v1/driving/${lng.toFixed(6)},${lat.toFixed(6)}?number=1`);
+        if (draft !== outing) return;
+        const waypoint = result.waypoints?.[0];
+        const [snappedLng, snappedLat] = waypoint?.location ?? [];
+        if (result.code !== "Ok" || !Number.isFinite(waypoint?.distance) || waypoint.distance > 20 ||
+            !Number.isFinite(snappedLng) || !Number.isFinite(snappedLat)) throw new Error("No nearby match");
+        outing.recordedCoordinates = [[lng, lat]];
+        Object.assign(point, { lat: snappedLat, lng: snappedLng });
+        outing.snapped = true;
+        status.textContent = "Unsaved pin · snapped to a walking path";
+      } catch {
+        if (draft === outing) status.textContent = "Unsaved pin · original GPS location";
+      } finally {
+        if (draft === outing) {
+          matchingRecording = false;
+          syncCaptureControls();
+          refreshMap();
+        }
+      }
+    }, error => {
+      locatingPin = false;
+      syncCaptureControls();
+      status.textContent = error.code === 1 ? geoError(error) : "Could not locate pin. Try again.";
+    }, { ...gpsOptions, maximumAge: 10000 });
+  });
+
+  draftCategory.addEventListener("change", () => {
+    if (!draft) return;
+    draft.category = draftCategory.value;
+    const entry = getCategory(draft.category);
+    if (!styleFor(entry).visible) {
+      saveLayerPreferences(entry, { ...overrides.get(entry.key), visible: true });
+      renderLayerControls();
+    }
+    refreshMap();
+  });
+  draftDescription.addEventListener("input", () => {
+    if (draft) draft.description = draftDescription.value;
+  });
+  byId("discard-draft").addEventListener("click", () => {
+    if (draft) closeDraft("Outing discarded");
+  });
+  draftExport.addEventListener("click", () => {
+    if (!draft || matchingRecording) return;
+    downloadOutings([draft], `streetlog-${draft.kind}-${draft.id}.geojson`);
+    closeDraft("GeoJSON export started");
+  });
+  window.addEventListener("beforeunload", event => {
+    if (!current?.segments.length && !draft) return;
+    event.preventDefault();
+    event.returnValue = "";
   });
 
   locate.addEventListener("click", () => {
@@ -1874,8 +1916,12 @@ function init() {
         type: "Feature",
         properties: {
           outing: outing.id,
+          outingKind: outing.kind ?? "recording",
           category: categoryName(outing.category),
-          streetSnapped: !singlePoint && statuses.every(Boolean),
+          description: outing.description ?? "",
+          photoFileNames: outing.photoFileNames ?? [],
+          streetSnapped: singlePoint ? outing.kind === "pin" && outing.snapped === true : statuses.every(Boolean),
+          ...(outing.recordedCoordinates ? { recordedCoordinates: outing.recordedCoordinates } : {}),
           ...(matched ? { streetSnappedParts: statuses } : {}),
           timestamps: segment.map(point => Number.isFinite(point.time) && Number.isFinite(new Date(point.time).getTime())
             ? new Date(point.time).toISOString() : null),
@@ -1890,21 +1936,26 @@ function init() {
     });
   }
 
-  exportButton.addEventListener("click", () => {
-    const selected = checkedRecorded.size ? outings.filter(outing => checkedRecorded.has(outing.id)) : outings;
+  function downloadOutings(selected, filename) {
     const features = selected.flatMap(outingFeatures);
     const blob = new Blob([JSON.stringify({ type: "FeatureCollection", features })],
       { type: "application/geo+json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = checkedRecorded.size ? "streetlog-selected.geojson" : "streetlog.geojson";
+    link.download = filename;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  exportButton.addEventListener("click", () => {
+    const selected = checkedRecorded.size ? outings.filter(outing => checkedRecorded.has(outing.id)) : outings;
+    downloadOutings(selected, checkedRecorded.size ? "streetlog-selected.geojson" : "streetlog.geojson");
   });
 
-  if (!navigator.geolocation || !window.isSecureContext) {
-    record.disabled = locate.disabled = true;
+  syncCaptureControls();
+  if (!gpsAvailable) {
+    locate.disabled = true;
     status.textContent = "GPS unavailable";
     hint.textContent = "Open Streetlog in a browser over HTTPS or localhost.";
   }
