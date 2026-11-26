@@ -10,6 +10,7 @@
 <script defer src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <script defer src="vendor/exifr.js"></script>
 <script defer src="folder-library.js"></script>
+<script defer src="github-publisher.js"></script>
 <script defer src="app.js"></script>
 </head>
 <body>
@@ -38,10 +39,23 @@ Drop pin
 <div class="draft-actions">
 <button id="discard-draft" class="outline" type="button">Discard</button>
 <button id="export-draft" class="outline" type="button">Export GeoJSON</button>
-<button class="outline" type="button" disabled title="GitHub upload is not configured">Push to GitHub</button>
+<button id="push-draft" class="outline" type="button" disabled>Push to GitHub</button>
 </div>
 </fieldset>
 </section>
+<details id="github-settings" class="github-settings">
+<summary>GitHub</summary>
+<p id="github-repository"></p>
+<p id="github-account" role="status">Guest · no account linked</p>
+<form id="github-form" hidden>
+<label for="github-token">Personal access token</label>
+<input id="github-token" type="password" required autocomplete="off" spellcheck="false">
+<button id="github-link" class="outline" type="submit">Link GitHub account</button>
+<p>The token is kept for this page session. <a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens" target="_blank" rel="noopener">GitHub token setup</a></p>
+</form>
+<button id="github-unlink" class="outline" type="button" hidden>Unlink account</button>
+<p id="github-status" role="status"></p>
+</details>
 <section class="history" aria-labelledby="history-label" hidden>
 <h2 id="history-label">Your exploration</h2>
 <div class="stats"><div><strong id="distance">0.00</strong><span>Kilometers logged</span></div><div><strong id="outings">0</strong><span>Recorded outings</span></div><div><strong id="imported-outings">0</strong><span>Imported outings</span></div></div>

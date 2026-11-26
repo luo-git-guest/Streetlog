@@ -384,6 +384,19 @@ function init() {
   const draftCategory = byId("draft-category");
   const draftDescription = byId("draft-description");
   const draftExport = byId("export-draft");
+  const pushDraft = byId("push-draft");
+  const discardDraft = byId("discard-draft");
+  const githubForm = byId("github-form");
+  const githubToken = byId("github-token");
+  const githubLink = byId("github-link");
+  const githubUnlink = byId("github-unlink");
+  const githubStatus = byId("github-status");
+  let githubRepo;
+  let githubFolder;
+  let githubClient;
+  let githubTarget;
+  let publishing = false;
+  let linking = false;
   const gpsAvailable = Boolean(navigator.geolocation && window.isSecureContext);
   let overrides = new Map();
   try {
@@ -1567,7 +1580,8 @@ function init() {
       const config = await fetch(new URL("site.json", base), { cache: "no-cache" });
       if (config.status === 404) return;
       if (!config.ok) throw new Error("Site configuration unavailable.");
-      const { GeoJSON_folder: path, categories } = await config.json();
+      const { GeoJSON_folder: path, categories, git_url: gitURL } = await config.json();
+      configureGitHub(gitURL, path);
       configureCategories(categories);
       if (typeof path !== "string" || !path.trim()) throw new Error("Set GeoJSON_folder in site.json.");
       folder = new URL(path.trim().replace(/\/?$/, "/"), base);
@@ -1639,12 +1653,102 @@ function init() {
     if (center) map.setView(pointCoords(point), Math.max(map.getZoom(), 17));
   }
 
+  function configureGitHub(url, folder) {
+    githubRepo = window.streetlogGitHub?.repository(url);
+    githubFolder = folder;
+    if (!githubRepo) {
+      byId("github-repository").textContent = "Set a GitHub repository URL in site.json.";
+      return;
+    }
+    const repo = githubRepo.join("/");
+    const link = document.createElement("a");
+    link.href = "https://github.com/" + repo;
+    link.textContent = repo;
+    byId("github-repository").replaceChildren(link);
+    githubForm.hidden = false;
+  }
+
+  githubForm.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!githubRepo || githubLink.disabled) return;
+    const token = githubToken.value.trim();
+    githubToken.value = "";
+    if (!token) return;
+    linking = true;
+    syncCaptureControls();
+    githubStatus.textContent = "Checking GitHub account and repository…";
+    try {
+      const client = window.streetlogGitHub.connect(token);
+      const account = (await client.user()).login;
+      const target = await client.inspect(githubRepo, githubFolder, account);
+      githubClient = client;
+      githubTarget = target;
+      byId("github-account").textContent = `${account} · ${target.role}`;
+      githubStatus.textContent = `Ready · ${target.branch} / ${target.path}`;
+      githubForm.hidden = true;
+      githubUnlink.hidden = false;
+    } catch (error) {
+      githubStatus.textContent = `Could not link GitHub: ${error.message}`;
+    } finally {
+      linking = false;
+      syncCaptureControls();
+    }
+  });
+
+  githubUnlink.addEventListener("click", () => {
+    if (publishing) return;
+    githubClient = githubTarget = null;
+    byId("github-account").textContent = "Guest · no account linked";
+    githubStatus.textContent = "";
+    githubUnlink.hidden = true;
+    githubForm.hidden = false;
+    syncCaptureControls();
+  });
+
+  pushDraft.addEventListener("click", async () => {
+    if (!draft || !githubTarget || matchingRecording || publishing) return;
+    const target = githubTarget;
+    const outing = draft;
+    const audience = target.isPrivate ? "" : " This outing can become publicly visible.";
+    if (!window.confirm(`Upload this outing to ${target.repo.join("/")}/${target.path}?${audience}`)) return;
+    publishing = true;
+    syncCaptureControls();
+    byId("github-settings").open = true;
+    githubStatus.textContent = "Uploading outing…";
+    try {
+      const latest = await githubClient.inspect(githubRepo, githubFolder, target.account);
+      if (latest.branch !== target.branch || latest.path !== target.path || latest.isPrivate !== target.isPrivate) {
+        githubTarget = latest;
+        throw new Error("The publishing destination changed. Review it before retrying.");
+      }
+      const result = await githubClient.upload(latest, `streetlog-${outing.kind}-${outing.id}.geojson`,
+        JSON.stringify({ type: "FeatureCollection", features: outingFeatures(outing) }));
+      const link = document.createElement("a");
+      link.href = result.url;
+      link.textContent = result.pullRequest ? "View pull request" : "View GitHub commit";
+      link.target = "_blank";
+      link.rel = "noopener";
+      githubStatus.replaceChildren(link);
+      closeDraft(result.pullRequest ? "Pull request opened" : "Outing pushed to GitHub");
+    } catch (error) {
+      githubStatus.textContent = `Upload failed: ${error.message}`;
+    } finally {
+      publishing = false;
+      syncCaptureControls();
+    }
+  });
+
   function syncCaptureControls() {
     record.disabled = !gpsAvailable || locatingPin || Boolean(draft);
     dropPin.disabled = !gpsAvailable || locatingPin || Boolean(current || draft);
     snapStreets.disabled = Boolean(current || draft) || locatingPin;
     draftFields.hidden = !draft;
-    draftExport.disabled = matchingRecording;
+    draftExport.disabled = matchingRecording || publishing;
+    discardDraft.disabled = publishing;
+    draftCategory.disabled = draftDescription.disabled = publishing;
+    pushDraft.disabled = !draft || !githubTarget || matchingRecording || publishing;
+    githubUnlink.disabled = publishing;
+    githubLink.disabled = publishing || linking;
   }
 
   function showDraft(outing, message) {
@@ -1859,11 +1963,11 @@ function init() {
   draftDescription.addEventListener("input", () => {
     if (draft) draft.description = draftDescription.value;
   });
-  byId("discard-draft").addEventListener("click", () => {
-    if (draft) closeDraft("Outing discarded");
+  discardDraft.addEventListener("click", () => {
+    if (draft && !publishing) closeDraft("Outing discarded");
   });
   draftExport.addEventListener("click", () => {
-    if (!draft || matchingRecording) return;
+    if (!draft || matchingRecording || publishing) return;
     downloadOutings([draft], `streetlog-${draft.kind}-${draft.id}.geojson`);
     closeDraft("GeoJSON export started");
   });
