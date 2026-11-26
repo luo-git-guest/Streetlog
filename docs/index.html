@@ -21,10 +21,13 @@
 <div class="state"><span id="dot"></span><span id="status" role="status">Ready to record</span></div>
 <div class="record-actions">
 <button id="record" type="button"><span aria-hidden="true">●</span> Start recording</button>
-<button id="drop-pin" class="outline" type="button">Drop pin</button>
+<button id="drop-pin" type="button">
+<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="12" cy="7" r="4" fill="currentColor"/><path d="M12 11v10"/></svg>
+Drop pin
+</button>
 </div>
 <p id="hint">Allow location access and keep this page open while you explore.</p>
-<label class="snap-option"><input id="snap-streets" type="checkbox" checked aria-describedby="snap-recording-note"> Snap to streets</label>
+<label class="snap-option"><input id="snap-streets" type="checkbox" checked autocomplete="off" aria-describedby="snap-recording-note"> Snap to streets</label>
 <p id="snap-recording-note">Matches recordings and pins to walking paths using <a href="https://routing.openstreetmap.de/about.html">FOSSGIS</a>. When enabled, route coordinates are sent to that service.</p>
 <fieldset id="outing-draft" hidden>
 <legend>Unsaved outing</legend>
@@ -101,7 +104,6 @@
 </aside>
 <section class="map-panel" aria-label="Street map">
 <div id="map" aria-label="Interactive street map"></div>
-<div class="legend"><span><i></i> Base streets</span><span id="photo-legend" class="photo-key" hidden><i></i> Photo</span></div>
 <details class="layer-control">
 <summary>
 <svg class="layer-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">

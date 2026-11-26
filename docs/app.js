@@ -581,7 +581,6 @@ function init() {
     if (!photos.length) {
       photoLayers.clearLayers();
       photoSections.clear();
-      byId("photo-legend").hidden = true;
       return;
     }
     const paths = [];
@@ -658,7 +657,6 @@ function init() {
       });
     }
 
-    byId("photo-legend").hidden = attached === 0;
     if (!readingPhotos) {
       let message = `${attached} of ${photos.length} geotagged photos on a route.`;
       if (attached < photos.length) message += " Add a route within 50 m of the remaining photos.";
@@ -707,19 +705,8 @@ function init() {
   const importStatus = byId("import-status");
   const importProgress = byId("import-progress");
   const snapStreets = byId("snap-streets");
-  const snapPreferenceKey = "streetlog.snap-streets";
-  try {
-    snapStreets.checked = localStorage.getItem(snapPreferenceKey) !== "off";
-  } catch {
-    // The markup supplies the default when browser storage is unavailable.
-  }
-  snapStreets.addEventListener("change", () => {
-    try {
-      localStorage.setItem(snapPreferenceKey, snapStreets.checked ? "on" : "off");
-    } catch {
-      // The selection still applies for this visit.
-    }
-  });
+  snapStreets.checked = true;
+
   function bindPublishedPhotos(layer, folder, availablePhotos) {
     const names = layer.feature?.properties?.photoFileNames;
     if (!Array.isArray(names)) return;
