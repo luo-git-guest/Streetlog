@@ -86,7 +86,12 @@
 </aside>
 <section class="map-panel" aria-label="Street map">
 <div id="map" aria-label="Interactive street map"></div>
-<div class="legend"><span><i></i> GPS trail</span><span><i></i> Base streets</span><span id="photo-legend" class="photo-key" hidden><i></i> Photo</span><span id="imported-legend" class="imported" hidden><i></i> Imported</span></div>
+<div class="legend"><span><i></i> Base streets</span><span id="photo-legend" class="photo-key" hidden><i></i> Photo</span></div>
+<details class="layer-control">
+<summary>Layers</summary>
+<div id="category-layers" class="layer-list"></div>
+<p id="layer-status" role="status"></p>
+</details>
 </section>
 </main>
 </body>

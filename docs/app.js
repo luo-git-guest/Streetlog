@@ -9,7 +9,6 @@ const hint = byId("hint");
 const storagePrefix = "streetlog.outing.";
 const gpsOptions = { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 };
 const routingAttribution = 'Routing by <a href="https://routing.openstreetmap.de/about.html">FOSSGIS</a> · <a href="https://www.openstreetmap.org/fixthemap">Fix the map</a>';
-const trailStyle = { color: "#ab2450", weight: 5, opacity: 0.92 };
 const defaultHint = hint.textContent;
 
 const matchBatchSize = 10;
@@ -231,6 +230,30 @@ function routePaths(geometry) {
   return paths.filter(path => Array.isArray(path) && path.length && path.every(validPoint));
 }
 
+const uncategorized = "Uncategorized";
+const categoryDefaults = { color: "#007985", weight: 5, opacity: 0.9, visible: true };
+
+function categoryName(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : uncategorized;
+}
+
+function categoryKey(value) {
+  return categoryName(value).toLowerCase();
+}
+
+function categoryStyle(config, fallback) {
+  const number = (value, otherwise, minimum, maximum) => {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : otherwise;
+  };
+  return {
+    color: typeof config.color === "string" && /^#[\da-f]{6}$/i.test(config.color) ? config.color : fallback.color,
+    weight: number(config.weight, fallback.weight, 1, 12),
+    opacity: number(config.opacity, fallback.opacity, 0, 1),
+    visible: typeof config.visible === "boolean" ? config.visible : fallback.visible
+  };
+}
+
 function importedOutingGroups(route) {
   const asFeatures = data => data.type === "FeatureCollection" ? data.features :
     [data.type === "Feature" ? data : { type: "Feature", geometry: data }];
@@ -245,10 +268,12 @@ function importedOutingGroups(route) {
       groups.set(sourceID, {
         key: JSON.stringify([route.id, sourceID]), routeID: route.id, sourceID,
         name: route.name || properties.name || "Imported route",
+        category: categoryName(properties.category),
         segments: [], matchedSegments: [], matchStatuses: [], features: [], snapped: route.snapped
       });
     }
     const group = groups.get(sourceID);
+    if (categoryKey(group.category) !== categoryKey(properties.category)) group.category = uncategorized;
     group.features.push(feature);
     const source = original[index]?.geometry;
     const embedded = routePaths({ type: "LineString", coordinates: properties.originalCoordinates });
@@ -347,8 +372,18 @@ function init() {
   }).addTo(map);
 
   let routingAttributed = false;
-  const imports = L.featureGroup().addTo(map);
-  const importedPaths = [];
+  const categoryLayers = new Map();
+  const categoryConfig = new Map();
+  const layerPreferenceKey = "streetlog.category-layers";
+  const layerList = byId("category-layers");
+  let overrides = new Map();
+  try {
+    const saved = JSON.parse(localStorage.getItem(layerPreferenceKey) || "[]");
+    if (Array.isArray(saved)) overrides = new Map(saved);
+  } catch {
+    // Layer controls remain usable if browser storage is unavailable.
+  }
+  const layerMembership = new WeakMap();
   const importLayers = new Map();
   const importedRoutes = [];
   const importedGroups = new Map();
@@ -363,13 +398,169 @@ function init() {
   let rejectedPhotos = 0;
   let readingPhotos = false;
 
-  function collectPaths(layer) {
+  function getCategory(name) {
+    const key = categoryKey(name);
+    if (!categoryLayers.has(key)) {
+      const entry = { key, name: categoryName(name), layer: L.featureGroup() };
+      categoryLayers.set(key, entry);
+      applyCategory(entry);
+      renderLayerControls();
+    }
+    return categoryLayers.get(key);
+  }
+
+  function styleFor(entry) {
+    const defaults = categoryConfig.get(entry.key) ?? categoryConfig.get(categoryKey(uncategorized)) ?? categoryDefaults;
+    return categoryStyle(overrides.get(entry.key) ?? {}, defaults);
+  }
+
+  function paintLayer(layer, style) {
+    if (layer.eachLayer) {
+      layer.eachLayer(child => paintLayer(child, style));
+    } else if (layer.setRadius) {
+      layer.setRadius(style.weight / 2);
+      layer.setStyle({ stroke: false, fillColor: style.color, fillOpacity: style.opacity });
+    } else {
+      layer.setStyle?.({ color: style.color, weight: style.weight, opacity: style.opacity,
+        fillColor: style.color, fillOpacity: style.opacity * 0.2 });
+    }
+  }
+
+  function applyCategory(entry) {
+    const style = styleFor(entry);
+    entry.layer.eachLayer(layer => paintLayer(layer, style));
+    if (style.visible && !map.hasLayer(entry.layer)) entry.layer.addTo(map);
+    if (!style.visible && map.hasLayer(entry.layer)) entry.layer.remove();
+  }
+
+  function registerLayer(layer, category) {
+    const entry = getCategory(category);
+    layerMembership.set(layer, entry);
+    paintLayer(layer, styleFor(entry));
+    entry.layer.addLayer(layer);
+    return layer;
+  }
+
+  function unregisterLayer(layer) {
+    layerMembership.get(layer)?.layer.removeLayer(layer);
+    layerMembership.delete(layer);
+  }
+
+  function isCategoryVisible(value) {
+    const entry = categoryLayers.get(categoryKey(value));
+    return !entry || styleFor(entry).visible;
+  }
+
+  function visibleMapBounds() {
+    const bounds = L.latLngBounds([]);
+    for (const entry of categoryLayers.values()) {
+      if (styleFor(entry).visible) bounds.extend(entry.layer.getBounds());
+    }
+    return bounds;
+  }
+
+  function saveLayerPreferences(entry, override) {
+    if (override) overrides.set(entry.key, override);
+    else overrides.delete(entry.key);
+    try {
+      localStorage.setItem(layerPreferenceKey, JSON.stringify([...overrides]));
+      byId("layer-status").textContent = "";
+    } catch {
+      byId("layer-status").textContent = "Changes apply for this visit. Browser storage is unavailable.";
+    }
+    applyCategory(entry);
+    showPhotoSections();
+    highlightServerItem();
+    highlightOutings();
+  }
+
+  function renderLayerControls() {
+    layerList.replaceChildren();
+    const entries = [...categoryLayers.values()].sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const style = styleFor(entry);
+      const row = document.createElement("div");
+      row.className = "layer-row";
+      const name = document.createElement("label");
+      name.className = "layer-name";
+      const visible = document.createElement("input");
+      visible.type = "checkbox";
+      visible.checked = style.visible;
+      const swatch = document.createElement("span");
+      swatch.className = "layer-color";
+      swatch.style.backgroundColor = style.color;
+      name.append(visible, swatch, document.createTextNode(entry.name));
+      const controls = document.createElement("div");
+      controls.className = "layer-style";
+      const update = (key, value) => {
+        saveLayerPreferences(entry, { ...overrides.get(entry.key), [key]: value });
+        swatch.style.backgroundColor = styleFor(entry).color;
+        reset.disabled = false;
+      };
+      visible.addEventListener("change", () => update("visible", visible.checked));
+      for (const [key, label, type, min, max, step] of [
+        ["color", "Color", "color"], ["weight", "Width", "range", 1, 12, 1],
+        ["opacity", "Opacity", "range", 0, 1, 0.05]
+      ]) {
+        const field = document.createElement("label");
+        const input = document.createElement("input");
+        input.type = type;
+        if (type === "range") {
+          input.min = min;
+          input.max = max;
+          input.step = step;
+        }
+        input.value = style[key];
+        input.setAttribute("aria-label", `${entry.name} ${label.toLowerCase()}`);
+        input.addEventListener("change", () => update(key, type === "range" ? Number(input.value) : input.value));
+        field.append(document.createTextNode(label), input);
+        controls.append(field);
+      }
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "outline";
+      reset.textContent = "Reset defaults";
+      reset.disabled = !overrides.has(entry.key);
+      reset.addEventListener("click", () => {
+        saveLayerPreferences(entry);
+        renderLayerControls();
+      });
+      controls.append(reset);
+      row.append(name, controls);
+      layerList.append(row);
+    }
+  }
+
+  function configureCategories(categories) {
+    for (const category of Array.isArray(categories) ? categories : []) {
+      if (typeof category?.name !== "string" || !category.name.trim()) continue;
+      const style = category.style ?? {};
+      let color = style.stroke;
+      if (typeof color === "string" && window.CSS?.supports("color", color)) {
+        const canvas = document.createElement("canvas").getContext("2d");
+        if (canvas) {
+          canvas.fillStyle = color;
+          color = canvas.fillStyle;
+        }
+      }
+      categoryConfig.set(categoryKey(category.name), categoryStyle({
+        color, weight: style["stroke-width"], opacity: style["stroke-opacity"],
+        visible: typeof category.visible === "boolean" ? category.visible : style.display !== "none"
+      }, categoryDefaults));
+      getCategory(category.name).name = category.name.trim();
+    }
+    getCategory(uncategorized);
+    for (const entry of categoryLayers.values()) applyCategory(entry);
+    renderLayerControls();
+  }
+
+  function collectPaths(layer, paths) {
     if (layer instanceof L.Polygon) return;
     if (layer instanceof L.Polyline) {
       const points = layer.getLatLngs();
-      if (Array.isArray(points[0])) importedPaths.push(...points);
-      else importedPaths.push(points);
-    } else if (layer.eachLayer) layer.eachLayer(collectPaths);
+      if (Array.isArray(points[0])) paths.push(...points);
+      else paths.push(points);
+    } else if (layer.eachLayer) layer.eachLayer(child => collectPaths(child, paths));
   }
 
   function showPhotoSections() {
@@ -379,8 +570,10 @@ function init() {
       byId("photo-legend").hidden = true;
       return;
     }
-    const paths = [...importedPaths, ...outings.flatMap(outing => outing.segments
-      .flatMap((segment, index) => segment.length > 1 ? displayedPaths(outing, segment, index) : []))];
+    const paths = [];
+    for (const entry of categoryLayers.values()) {
+      if (styleFor(entry).visible) entry.layer.eachLayer(layer => collectPaths(layer, paths));
+    }
     const groups = [];
     let attached = 0;
     for (const photo of photos) {
@@ -513,8 +706,6 @@ function init() {
       // The selection still applies for this visit.
     }
   });
-  const importedStyle = { color: "#007985", weight: 5, opacity: 0.9 };
-
   function bindPublishedPhotos(layer, folder, availablePhotos) {
     const names = layer.feature?.properties?.photoFileNames;
     if (!Array.isArray(names)) return;
@@ -558,23 +749,23 @@ function init() {
 
   function plotImportedRoute(route) {
     const layer = L.geoJSON(route.data, {
-      style: importedStyle,
-      pointToLayer: (_feature, latlng) => L.circleMarker(latlng, {
-        radius: importedStyle.weight / 2, stroke: false,
-        fillColor: importedStyle.color, fillOpacity: importedStyle.opacity
-      })
+      pointToLayer: (_feature, latlng) => L.circleMarker(latlng, { stroke: false })
     });
     const bounds = layer.getBounds();
     if (!bounds.isValid()) return null;
     const groups = importedOutingGroups(route);
-    imports.addLayer(layer);
     importLayers.set(route.id, layer);
-    collectPaths(layer);
+    layer.eachLayer(featureLayer => registerLayer(featureLayer, featureLayer.feature?.properties?.category));
     importedRoutes.push(route);
     for (const group of groups) importedGroups.set(group.key, group);
-    byId("imported-legend").hidden = false;
     if (route.snapped) showRoutingAttribution();
-    return bounds;
+    const visibleBounds = L.latLngBounds([]);
+    layer.eachLayer(featureLayer => {
+      if (isCategoryVisible(featureLayer.feature?.properties?.category)) {
+        visibleBounds.extend(featureLayer.getBounds?.() ?? featureLayer.getLatLng?.());
+      }
+    });
+    return visibleBounds;
   }
 
   importButton.addEventListener("click", () => fileInput.click());
@@ -604,7 +795,7 @@ function init() {
       }
       showPhotoSections();
       renderOutingPicker();
-      map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
+      if (bounds.isValid()) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
       let message = `Plotted ${file.name}.`;
       if (result.matched) message += " Street matching applied.";
       if (result.unmatched) message += " Unmatched sections use the original coordinates.";
@@ -711,6 +902,7 @@ function init() {
         ? { type: "FeatureCollection", features: outingFeatures(selected.entry) } : selected.entry.data;
       L.geoJSON(data, {
         style,
+        filter: feature => isCategoryVisible(feature.properties?.category),
         pointToLayer: (_feature, point) => L.circleMarker(point, {
           radius: style.weight / 2, stroke: false, fillColor: style.color, fillOpacity: 1, interactive: false
         })
@@ -778,7 +970,7 @@ function init() {
     const features = [
       ...outings.filter(outing => checkedRecorded.has(outing.id)).flatMap(outingFeatures),
       ...[...checkedImported].flatMap(key => importedGroups.get(key)?.features ?? [])
-    ];
+    ].filter(feature => isCategoryVisible(feature.properties?.category));
     if (features.length === 0) return;
     const style = { color: "#2155cf", weight: 8, interactive: false };
     L.geoJSON({ type: "FeatureCollection", features }, {
@@ -811,19 +1003,19 @@ function init() {
   });
 
   function refreshMap() {
-    routeLayer?.remove();
-    routeLayer = L.featureGroup().addTo(map);
+    if (routeLayer) routeLayer.eachLayer(unregisterLayer);
+    routeLayer = L.featureGroup();
     let meters = 0;
     for (const outing of outings) {
       if (outing.snapped || (outing.matchedSegments && outing.snapped !== false)) showRoutingAttribution();
       for (const [segmentIndex, segment] of outing.segments.entries()) {
         if (segment.length === 1) {
-          L.circleMarker(pointCoords(segment[0]), {
-            ...trailStyle, radius: 4, fillOpacity: 1, interactive: false
-          }).addTo(routeLayer);
+          const dot = L.circleMarker(pointCoords(segment[0]), { interactive: false });
+          routeLayer.addLayer(registerLayer(dot, outing.category));
         } else {
           for (const path of displayedPaths(outing, segment, segmentIndex)) {
-            L.polyline(path, { ...trailStyle, interactive: false }).addTo(routeLayer);
+            const line = L.polyline(path, { interactive: false });
+            routeLayer.addLayer(registerLayer(line, outing.category));
             for (let index = 1; index < path.length; index++) {
               meters += map.distance(path[index - 1], path[index]);
             }
@@ -846,8 +1038,8 @@ function init() {
     record.disabled = true;
   }
   refreshMap();
-  if (routeLayer.getBounds().isValid()) {
-    map.fitBounds(routeLayer.getBounds(), { maxZoom: 17, padding: [30, 30] });
+  if (visibleMapBounds().isValid()) {
+    map.fitBounds(visibleMapBounds(), { maxZoom: 17, padding: [30, 30] });
   }
 
   const saveLibrary = byId("save-library");
@@ -876,7 +1068,7 @@ function init() {
         photos.push({ ...photo, point: L.latLng(photo.lat, photo.lng), url: photo.image, serverSaved: true });
       }
       refreshMap();
-      const bounds = routeLayer.getBounds().extend(imports.getBounds());
+      const bounds = visibleMapBounds();
       if (bounds.isValid() && !current) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
       saveLibrary.hidden = false;
       saveLibrary.disabled = false;
@@ -958,14 +1150,11 @@ function init() {
         const index = importedRoutes.findIndex(route => route.id === id);
         if (index >= 0) importedRoutes.splice(index, 1);
         const layer = importLayers.get(id);
-        if (layer) imports.removeLayer(layer);
+        if (layer) layer.eachLayer(unregisterLayer);
         importLayers.delete(id);
         for (const [key, group] of importedGroups) {
           if (group.routeID === id) importedGroups.delete(key);
         }
-        importedPaths.length = 0;
-        imports.eachLayer(collectPaths);
-        byId("imported-legend").hidden = !importLayers.size;
       } else {
         const index = photos.findIndex(photo => photo.id === id);
         if (index >= 0) {
@@ -1111,7 +1300,7 @@ function init() {
       }
     }
     refreshMap();
-    const bounds = routeLayer.getBounds().extend(imports.getBounds());
+    const bounds = visibleMapBounds();
     if (bounds.isValid() && !current) map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
     let summary = skipped ? ` Skipped ${skipped} unreadable files.` : "";
     if (unmatched) summary += " Unmatched sections use their original coordinates.";
@@ -1322,7 +1511,7 @@ function init() {
         if (outings.some(outing => outing.id.toLowerCase() === id)) {
           existing++;
         } else {
-          const outing = { id, name: group.name, segments: group.segments };
+          const outing = { id, name: group.name, category: group.category, segments: group.segments };
           if (group.matchedSegments.some(Boolean)) outing.matchedSegments = group.matchedSegments;
           outing.matchStatuses = group.matchStatuses;
           outing.snapped = Boolean(group.snapped);
@@ -1400,7 +1589,8 @@ function init() {
       const config = await fetch(new URL("site.json", base), { cache: "no-cache" });
       if (config.status === 404) return;
       if (!config.ok) throw new Error("Site configuration unavailable.");
-      const { GeoJSON_folder: path } = await config.json();
+      const { GeoJSON_folder: path, categories } = await config.json();
+      configureCategories(categories);
       if (typeof path !== "string" || !path.trim()) throw new Error("Set GeoJSON_folder in site.json.");
       folder = new URL(path.trim().replace(/\/?$/, "/"), base);
       if (folder.origin !== base.origin || !folder.pathname.startsWith(base.pathname) ||
@@ -1445,7 +1635,7 @@ function init() {
         failed++;
       }
     }
-    if (loaded) refreshMap();
+    refreshMap();
     if (bounds.isValid() && !current && checkedRecorded.size + checkedImported.size === 0) {
       map.fitBounds(bounds, { maxZoom: 17, padding: [30, 30] });
     }
@@ -1684,6 +1874,7 @@ function init() {
         type: "Feature",
         properties: {
           outing: outing.id,
+          category: categoryName(outing.category),
           streetSnapped: !singlePoint && statuses.every(Boolean),
           ...(matched ? { streetSnappedParts: statuses } : {}),
           timestamps: segment.map(point => Number.isFinite(point.time) && Number.isFinite(new Date(point.time).getTime())
